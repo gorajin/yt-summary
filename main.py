@@ -42,10 +42,16 @@ NOTION_CLIENT_ID = os.getenv("NOTION_CLIENT_ID")
 NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET")
 NOTION_REDIRECT_URI = os.getenv("NOTION_REDIRECT_URI", "https://watchlater.up.railway.app/auth/notion/callback")
 
-# Initialize Supabase
+# Initialize Supabase (optional - for multi-user mode)
 supabase: SupabaseClient = None
 if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✓ Supabase connected")
+    except Exception as e:
+        print(f"⚠ Supabase initialization failed: {e}")
+        print("  Multi-user mode disabled. Legacy mode still available.")
+        supabase = None
 
 # Free tier limits
 FREE_TIER_LIMIT = 10
