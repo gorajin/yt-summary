@@ -185,25 +185,33 @@ def get_transcript(url: str) -> tuple:
     if not video_id:
         raise Exception("Could not extract video ID")
     
+    print(f"  → Attempting transcript extraction for video: {video_id}")
+    
     # Try youtube-transcript-api first (more reliable on servers)
     try:
+        print("  → Trying youtube-transcript-api...")
         from youtube_transcript_api import YouTubeTranscriptApi
+        print("  → youtube-transcript-api imported successfully")
         
         # Try to get transcript in order of preference
         transcript_list = None
         for lang in ['en', 'en-US', 'en-GB', 'ko']:
             try:
                 transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
+                print(f"  → Found transcript in language: {lang}")
                 break
-            except:
+            except Exception as lang_err:
+                print(f"  → No transcript in {lang}: {type(lang_err).__name__}")
                 continue
         
         # Try auto-generated if manual not found
         if not transcript_list:
             try:
+                print("  → Trying auto-generated transcript...")
                 transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            except:
-                pass
+                print("  → Got auto-generated transcript")
+            except Exception as auto_err:
+                print(f"  → Auto-generated failed: {type(auto_err).__name__}: {auto_err}")
         
         if transcript_list:
             transcript = ' '.join([entry['text'] for entry in transcript_list])
@@ -213,13 +221,16 @@ def get_transcript(url: str) -> tuple:
             title = get_video_title(video_id)
             print(f"  → Got transcript via youtube-transcript-api ({len(transcript)} chars)")
             return transcript, title
+        else:
+            print("  → youtube-transcript-api returned no transcript, trying yt-dlp")
             
-    except ImportError:
-        print("  → youtube-transcript-api not installed, using yt-dlp")
+    except ImportError as ie:
+        print(f"  → youtube-transcript-api not installed: {ie}, using yt-dlp")
     except Exception as e:
-        print(f"  → youtube-transcript-api failed: {e}, trying yt-dlp")
+        print(f"  → youtube-transcript-api failed: {type(e).__name__}: {e}, trying yt-dlp")
     
     # Fallback to yt-dlp
+    print("  → Falling back to yt-dlp...")
     return get_transcript_ytdlp(url)
 
 
