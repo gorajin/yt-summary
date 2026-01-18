@@ -384,62 +384,89 @@ async def notion_auth_start(user_id: str):
 @app.get("/auth/notion/callback")
 async def notion_auth_callback(code: str, state: str):
     """Handle Notion OAuth callback."""
-    if not NOTION_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="Notion OAuth not configured")
-    
-    # Extract user_id from state
-    user_id = state.split(":")[0]
-    
-    # Exchange code for token
-    token_url = "https://api.notion.com/v1/oauth/token"
-    
-    import base64
-    credentials = base64.b64encode(f"{NOTION_CLIENT_ID}:{NOTION_CLIENT_SECRET}".encode()).decode()
-    
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": NOTION_REDIRECT_URI
-    }
-    
-    req = urllib.request.Request(
-        token_url,
-        data=json.dumps(data).encode('utf-8'),
-        headers={
-            'Content-Type': 'application/json',
-            'Authorization': f'Basic {credentials}'
-        },
-        method='POST'
-    )
-    
-    with urllib.request.urlopen(req) as response:
-        token_data = json.loads(response.read().decode('utf-8'))
-    
-    access_token = token_data.get("access_token")
-    workspace_name = token_data.get("workspace_name")
-    
-    # Find or create database for user
-    notion = NotionClient(auth=access_token)
-    
-    # Search for existing database
-    search_results = notion.search(filter={"property": "object", "value": "database"}).get("results", [])
-    
-    database_id = None
-    for db in search_results:
-        title = db.get("title", [{}])[0].get("plain_text", "")
-        if "YouTube" in title or "Watch" in title or "Summary" in title:
-            database_id = db["id"]
-            break
-    
-    # Update user in database
-    supabase.table("users").update({
-        "notion_access_token": access_token,
-        "notion_database_id": database_id,
-        "notion_workspace": workspace_name
-    }).eq("id", user_id).execute()
-    
-    # Redirect to app with success
-    return RedirectResponse(url=f"watchlater://notion-connected?success=true")
+    try:
+        if not NOTION_CLIENT_SECRET:
+            print("ERROR: NOTION_CLIENT_SECRET not configured")
+            return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=server_not_configured")
+        
+        if not NOTION_CLIENT_ID:
+            print("ERROR: NOTION_CLIENT_ID not configured")
+            return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=server_not_configured")
+        
+        # Extract user_id from state
+        user_id = state.split(":")[0]
+        print(f"Notion OAuth callback for user: {user_id}")
+        
+        # Exchange code for token
+        token_url = "https://api.notion.com/v1/oauth/token"
+        
+        import base64
+        credentials = base64.b64encode(f"{NOTION_CLIENT_ID}:{NOTION_CLIENT_SECRET}".encode()).decode()
+        
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": NOTION_REDIRECT_URI
+        }
+        
+        print(f"Exchanging code for token with redirect_uri: {NOTION_REDIRECT_URI}")
+        
+        req = urllib.request.Request(
+            token_url,
+            data=json.dumps(data).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Basic {credentials}'
+            },
+            method='POST'
+        )
+        
+        try:
+            with urllib.request.urlopen(req) as response:
+                token_data = json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8')
+            print(f"Notion token exchange failed: {e.code} - {error_body}")
+            return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=token_exchange_failed")
+        
+        access_token = token_data.get("access_token")
+        workspace_name = token_data.get("workspace_name")
+        print(f"Got Notion token for workspace: {workspace_name}")
+        
+        # Find or create database for user
+        notion = NotionClient(auth=access_token)
+        
+        # Search for existing database
+        search_results = notion.search(filter={"property": "object", "value": "database"}).get("results", [])
+        
+        database_id = None
+        for db in search_results:
+            title = db.get("title", [{}])[0].get("plain_text", "")
+            if "YouTube" in title or "Watch" in title or "Summary" in title:
+                database_id = db["id"]
+                print(f"Found existing database: {title} ({database_id})")
+                break
+        
+        if not database_id:
+            print("No matching database found - user will need to create one")
+        
+        # Update user in database
+        supabase.table("users").update({
+            "notion_access_token": access_token,
+            "notion_database_id": database_id,
+            "notion_workspace": workspace_name
+        }).eq("id", user_id).execute()
+        
+        print(f"✓ Notion connected for user {user_id}")
+        
+        # Redirect to app with success
+        return RedirectResponse(url=f"watchlater://notion-connected?success=true")
+        
+    except Exception as e:
+        print(f"Notion OAuth callback error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=unknown")
 
 
 @app.get("/me")
