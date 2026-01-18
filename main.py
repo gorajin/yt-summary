@@ -158,7 +158,7 @@ def check_rate_limit(user: dict) -> int:
 
 def increment_usage(user_id: str):
     """Increment the user's monthly usage counter."""
-    supabase.rpc("increment_summaries", {"user_id": user_id}).execute()
+    supabase.rpc("increment_summaries", {"p_user_id": user_id}).execute()
 
 
 # ============ YouTube Functions ============
