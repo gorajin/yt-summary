@@ -674,8 +674,49 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
     except HTTPException:
         raise
     except Exception as e:
-        print(f"  ✗ Error: {str(e)}")
-        return SummarizeResponse(success=False, error=str(e))
+        error_msg = str(e)
+        print(f"  ✗ Error: {error_msg}")
+        
+        # Convert technical errors to user-friendly messages
+        friendly_error = get_friendly_error(error_msg)
+        return SummarizeResponse(success=False, error=friendly_error)
+
+
+def get_friendly_error(error: str) -> str:
+    """Convert technical error messages to user-friendly ones."""
+    error_lower = error.lower()
+    
+    # No subtitles available
+    if "subtitles are disabled" in error_lower or "transcriptsdisabled" in error_lower:
+        return "This video doesn't have subtitles enabled. The video owner has disabled captions."
+    
+    if "no subtitles available" in error_lower or "no transcript" in error_lower:
+        return "No subtitles available for this video. Try a different video."
+    
+    # YouTube bot detection
+    if "sign in to confirm you're not a bot" in error_lower or "cookies" in error_lower:
+        return "Unable to access this video right now. Please try again in a few minutes."
+    
+    # Invalid URL
+    if "invalid" in error_lower and "url" in error_lower:
+        return "Invalid YouTube URL. Please paste a valid YouTube link."
+    
+    if "could not extract video id" in error_lower:
+        return "Couldn't recognize this as a YouTube video. Please check the URL."
+    
+    # Network errors
+    if "timeout" in error_lower or "connection" in error_lower:
+        return "Connection error. Please check your internet and try again."
+    
+    # Rate limits
+    if "rate limit" in error_lower or "too many requests" in error_lower:
+        return "Too many requests. Please wait a moment and try again."
+    
+    # Default - keep it short
+    if len(error) > 100:
+        return "Something went wrong. Please try a different video."
+    
+    return error
 
 
 # Legacy endpoint for backwards compatibility (no auth required)
