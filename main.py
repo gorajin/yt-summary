@@ -106,22 +106,30 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         
         # Get user profile from our users table
         user_id = user_response.user.id
-        result = supabase.table("users").select("*").eq("id", user_id).single().execute()
         
-        if not result.data:
-            # Create user profile if doesn't exist
-            print(f"AUTH: Creating new user profile for {user_id}")
-            new_user = {
-                "id": user_id,
-                "email": user_response.user.email,
-                "subscription_tier": "free",
-                "summaries_this_month": 0,
-            }
-            supabase.table("users").insert(new_user).execute()
-            return new_user
+        # Try to get existing user (don't use .single() as it throws on 0 rows)
+        try:
+            result = supabase.table("users").select("*").eq("id", user_id).execute()
+            existing_users = result.data if result.data else []
+        except Exception as e:
+            print(f"AUTH: Error fetching user: {e}")
+            existing_users = []
         
-        print(f"AUTH: Found existing user profile for {user_id}")
-        return result.data
+        if existing_users and len(existing_users) > 0:
+            print(f"AUTH: Found existing user profile for {user_id}")
+            return existing_users[0]
+        
+        # Create user profile if doesn't exist
+        print(f"AUTH: Creating new user profile for {user_id}")
+        new_user = {
+            "id": user_id,
+            "email": user_response.user.email,
+            "subscription_tier": "free",
+            "summaries_this_month": 0,
+        }
+        supabase.table("users").insert(new_user).execute()
+        return new_user
+        
     except HTTPException:
         raise
     except Exception as e:
