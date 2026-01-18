@@ -103,15 +103,23 @@ struct HomeView: View {
                 SettingsView()
             }
             .onAppear {
-                loadProfile()
+                // Refresh token first on appear, then load profile
+                Task {
+                    await authManager.refreshTokenIfNeeded()
+                    if let token = authManager.accessToken {
+                        await viewModel.loadProfile(token: token)
+                    }
+                }
             }
             .onChange(of: authManager.notionJustConnected) { _, connected in
                 if connected {
                     authManager.notionJustConnected = false
-                    // Refresh token first, then load profile
+                    // Refresh token first, then load profile with fresh token
                     Task {
                         await authManager.refreshTokenIfNeeded()
-                        loadProfile()
+                        if let token = authManager.accessToken {
+                            await viewModel.loadProfile(token: token)
+                        }
                     }
                 }
             }
@@ -119,9 +127,10 @@ struct HomeView: View {
     }
     
     private func loadProfile() {
-        guard let token = authManager.accessToken else { return }
         Task {
-            await viewModel.loadProfile(token: token)
+            if let token = authManager.accessToken {
+                await viewModel.loadProfile(token: token)
+            }
         }
     }
     
