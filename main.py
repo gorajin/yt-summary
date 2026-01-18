@@ -371,6 +371,39 @@ async def health():
     return {"status": "ok", "service": "YouTube Summary API", "version": "2.0.0"}
 
 
+@app.get("/debug/token")
+async def debug_token(authorization: Optional[str] = Header(None)):
+    """Debug endpoint to test token validation."""
+    result = {
+        "has_authorization": authorization is not None,
+        "has_supabase": supabase is not None,
+        "supabase_url": SUPABASE_URL[:30] + "..." if SUPABASE_URL else None,
+    }
+    
+    if not authorization:
+        result["error"] = "No authorization header"
+        return result
+    
+    if not authorization.startswith("Bearer "):
+        result["error"] = "Invalid authorization format"
+        return result
+    
+    token = authorization.replace("Bearer ", "")
+    result["token_length"] = len(token)
+    result["token_prefix"] = token[:30] + "..."
+    
+    try:
+        user_response = supabase.auth.get_user(token)
+        result["user_id"] = user_response.user.id if user_response.user else None
+        result["user_email"] = user_response.user.email if user_response.user else None
+        result["valid"] = user_response.user is not None
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {str(e)}"
+        result["valid"] = False
+    
+    return result
+
+
 @app.get("/auth/notion")
 async def notion_auth_start(user_id: str):
     """Start Notion OAuth flow."""
