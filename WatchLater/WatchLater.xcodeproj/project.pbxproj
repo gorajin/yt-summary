@@ -17,7 +17,33 @@
 		A11111111111111111111120 /* AuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11111111111111111111121 /* AuthManager.swift */; };
 		A11111111111111111111122 /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11111111111111111111123 /* HomeViewModel.swift */; };
 		A11111111111111111111124 /* GoogleSignInService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11111111111111111111125 /* GoogleSignInService.swift */; };
+		B22222222222222222222221 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22222222222222222222222 /* ShareViewController.swift */; };
+		B22222222222222222222224 /* WatchLaterShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B22222222222222222222220 /* WatchLaterShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B22222222222222222222225 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A111111111111111111111FE /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B2222222222222222222221F;
+			remoteInfo = WatchLaterShareExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B22222222222222222222227 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				B22222222222222222222224 /* WatchLaterShareExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A11111111111111111111100 /* WatchLater.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchLater.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -31,6 +57,9 @@
 		A11111111111111111111121 /* AuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthManager.swift; sourceTree = "<group>"; };
 		A11111111111111111111123 /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
 		A11111111111111111111125 /* GoogleSignInService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSignInService.swift; sourceTree = "<group>"; };
+		B22222222222222222222220 /* WatchLaterShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WatchLaterShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B22222222222222222222222 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		B22222222222222222222223 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -38,6 +67,7 @@
 			isa = PBXGroup;
 			children = (
 				A11111111111111111111102 /* WatchLater */,
+				B22222222222222222222228 /* WatchLaterShareExtension */,
 				A11111111111111111111103 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -59,6 +89,7 @@
 			isa = PBXGroup;
 			children = (
 				A11111111111111111111100 /* WatchLater.app */,
+				B22222222222222222222220 /* WatchLaterShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -91,6 +122,15 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
+		B22222222222222222222228 /* WatchLaterShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				B22222222222222222222222 /* ShareViewController.swift */,
+				B22222222222222222222223 /* Info.plist */,
+			);
+			path = WatchLaterShareExtension;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -100,10 +140,12 @@
 			buildPhases = (
 				A111111111111111111111FC /* Sources */,
 				A111111111111111111111FB /* Resources */,
+				B22222222222222222222227 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B22222222222222222222226 /* PBXTargetDependency */,
 			);
 			name = WatchLater;
 			packageProductDependencies = (
@@ -111,6 +153,23 @@
 			productName = WatchLater;
 			productReference = A11111111111111111111100 /* WatchLater.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B2222222222222222222221F /* WatchLaterShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B2222222222222222222222B /* Build configuration list for PBXNativeTarget "WatchLaterShareExtension" */;
+			buildPhases = (
+				B2222222222222222222221C /* Sources */,
+				B2222222222222222222221D /* Frameworks */,
+				B2222222222222222222221E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WatchLaterShareExtension;
+			productName = WatchLaterShareExtension;
+			productReference = B22222222222222222222220 /* WatchLaterShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -123,6 +182,9 @@
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					A111111111111111111111FF = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					B2222222222222222222221F = {
 						CreatedOnToolsVersion = 15.0;
 					};
 				};
@@ -143,6 +205,7 @@
 			projectRoot = "";
 			targets = (
 				A111111111111111111111FF /* WatchLater */,
+				B2222222222222222222221F /* WatchLaterShareExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -153,6 +216,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A11111111111111111111115 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B2222222222222222222221E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -175,7 +245,33 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B2222222222222222222221C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B22222222222222222222221 /* ShareViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B22222222222222222222226 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B2222222222222222222221F /* WatchLaterShareExtension */;
+			targetProxy = B22222222222222222222225 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B2222222222222222222221D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
 		A111111111111111111111F1 /* Debug */ = {
@@ -236,6 +332,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WatchLater/WatchLater.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = GNG2M47BD7;
@@ -265,6 +362,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WatchLater/WatchLater.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = GNG2M47BD7;
@@ -289,6 +387,58 @@
 			};
 			name = Release;
 		};
+		B22222222222222222222229 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WatchLaterShareExtension/WatchLaterShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GNG2M47BD7;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WatchLaterShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Save to Notion";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.watchlater.app.ShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B2222222222222222222222A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = WatchLaterShareExtension/WatchLaterShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GNG2M47BD7;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WatchLaterShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Save to Notion";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.watchlater.app.ShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -306,6 +456,15 @@
 			buildConfigurations = (
 				A111111111111111111111F3 /* Debug */,
 				A111111111111111111111F4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B2222222222222222222222B /* Build configuration list for PBXNativeTarget "WatchLaterShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B22222222222222222222229 /* Debug */,
+				B2222222222222222222222A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

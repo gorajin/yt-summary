@@ -159,13 +159,20 @@ class AuthManager: ObservableObject {
     
     // MARK: - Session Management
     
+    private let sharedDefaults = UserDefaults(suiteName: "group.com.watchlater.app")
+    
     private func saveSession(token: String, refreshToken: String?, userId: String, email: String) {
+        // Save to standard UserDefaults
         UserDefaults.standard.set(token, forKey: tokenKey)
         UserDefaults.standard.set(userId, forKey: userIdKey)
         UserDefaults.standard.set(email, forKey: emailKey)
         if let refreshToken = refreshToken {
             UserDefaults.standard.set(refreshToken, forKey: refreshTokenKey)
         }
+        
+        // Also save to shared App Group for Share Extension access
+        sharedDefaults?.set(token, forKey: tokenKey)
+        sharedDefaults?.set(userId, forKey: userIdKey)
         
         self.accessToken = token
         self.userId = userId
@@ -180,6 +187,10 @@ class AuthManager: ObservableObject {
             self.userId = userId
             self.userEmail = UserDefaults.standard.string(forKey: emailKey)
             self.isAuthenticated = true
+            
+            // Sync to shared defaults for Share Extension
+            sharedDefaults?.set(token, forKey: tokenKey)
+            sharedDefaults?.set(userId, forKey: userIdKey)
         }
     }
 }

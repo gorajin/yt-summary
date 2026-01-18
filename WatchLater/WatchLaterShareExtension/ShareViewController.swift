@@ -1,138 +1,270 @@
 import UIKit
-import Social
-import MobileCoreServices
-import UniformTypeIdentifiers
+import SwiftUI
 
 class ShareViewController: UIViewController {
     
-    private var urlToShare: String?
-    
     override func viewDidLoad() {
         super.viewDidLoad()
-        setupUI()
-        extractURL()
+        
+        // Extract the shared URL
+        extractSharedURL { [weak self] url in
+            guard let self = self, let url = url else {
+                self?.showError("Could not get URL")
+                return
+            }
+            
+            // Show the share UI
+            self.showShareUI(url: url)
+        }
     }
     
-    private func setupUI() {
-        view.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+    private func extractSharedURL(completion: @escaping (String?) -> Void) {
+        guard let extensionItem = extensionContext?.inputItems.first as? NSExtensionItem,
+              let attachments = extensionItem.attachments else {
+            completion(nil)
+            return
+        }
         
-        let card = UIView()
-        card.backgroundColor = .systemBackground
-        card.layer.cornerRadius = 16
-        card.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(card)
+        // Try to get URL
+        for attachment in attachments {
+            if attachment.hasItemConformingToTypeIdentifier("public.url") {
+                attachment.loadItem(forTypeIdentifier: "public.url", options: nil) { item, error in
+                    DispatchQueue.main.async {
+                        if let url = item as? URL {
+                            completion(url.absoluteString)
+                        } else {
+                            completion(nil)
+                        }
+                    }
+                }
+                return
+            }
+            
+            // Also try plain text (YouTube sometimes shares as text)
+            if attachment.hasItemConformingToTypeIdentifier("public.plain-text") {
+                attachment.loadItem(forTypeIdentifier: "public.plain-text", options: nil) { item, error in
+                    DispatchQueue.main.async {
+                        if let text = item as? String, text.contains("youtu") {
+                            completion(text)
+                        } else {
+                            completion(nil)
+                        }
+                    }
+                }
+                return
+            }
+        }
         
-        let stackView = UIStackView()
-        stackView.axis = .vertical
-        stackView.spacing = 16
-        stackView.alignment = .center
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(stackView)
+        completion(nil)
+    }
+    
+    private func showShareUI(url: String) {
+        // Check if user is authenticated
+        let sharedDefaults = UserDefaults(suiteName: "group.com.watchlater.app")
+        guard let token = sharedDefaults?.string(forKey: "supabase_access_token") else {
+            showError("Please sign in to WatchLater first")
+            return
+        }
         
-        // Icon
-        let iconView = UIImageView(image: UIImage(systemName: "sparkles"))
-        iconView.tintColor = .systemOrange
-        iconView.contentMode = .scaleAspectFit
-        iconView.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        iconView.heightAnchor.constraint(equalToConstant: 48).isActive = true
-        stackView.addArrangedSubview(iconView)
+        // Create SwiftUI view
+        let shareView = ShareExtensionView(
+            url: url,
+            onSave: { [weak self] in
+                self?.summarizeAndSave(url: url, token: token)
+            },
+            onCancel: { [weak self] in
+                self?.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+            }
+        )
         
-        // Title
-        let titleLabel = UILabel()
-        titleLabel.text = "Saving to Notion..."
-        titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
-        titleLabel.textAlignment = .center
-        stackView.addArrangedSubview(titleLabel)
+        let hostingController = UIHostingController(rootView: shareView)
+        hostingController.view.backgroundColor = .clear
         
-        // Activity indicator
-        let spinner = UIActivityIndicatorView(style: .medium)
-        spinner.startAnimating()
-        stackView.addArrangedSubview(spinner)
+        addChild(hostingController)
+        view.addSubview(hostingController.view)
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         
         NSLayoutConstraint.activate([
-            card.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            card.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            card.widthAnchor.constraint(equalToConstant: 280),
-            card.heightAnchor.constraint(equalToConstant: 160),
-            
-            stackView.centerXAnchor.constraint(equalTo: card.centerXAnchor),
-            stackView.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            hostingController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            hostingController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
+        
+        hostingController.didMove(toParent: self)
     }
     
-    private func extractURL() {
-        guard let item = extensionContext?.inputItems.first as? NSExtensionItem,
-              let attachments = item.attachments else {
-            complete(success: false, message: "No content found")
-            return
-        }
+    private func summarizeAndSave(url: String, token: String) {
+        // Show loading - update UI through the hosted SwiftUI view
         
-        for attachment in attachments {
-            if attachment.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                attachment.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { [weak self] item, _ in
-                    if let url = item as? URL {
-                        self?.urlToShare = url.absoluteString
-                        self?.sendToAPI()
+        Task {
+            do {
+                let result = try await callSummarizeAPI(url: url, token: token)
+                
+                await MainActor.run {
+                    if result.success {
+                        self.showSuccess(title: result.title ?? "Summary saved!")
+                    } else {
+                        self.showError(result.error ?? "Failed to save")
                     }
                 }
-                return
-            }
-            
-            if attachment.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                attachment.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { [weak self] item, _ in
-                    if let text = item as? String, text.contains("youtube.com") || text.contains("youtu.be") {
-                        self?.urlToShare = text
-                        self?.sendToAPI()
-                    }
+            } catch {
+                await MainActor.run {
+                    self.showError(error.localizedDescription)
                 }
-                return
             }
         }
-        
-        complete(success: false, message: "No YouTube URL found")
     }
     
-    private func sendToAPI() {
-        guard let url = urlToShare,
-              let token = UserDefaults(suiteName: "group.com.watchlater.app")?.string(forKey: "access_token") else {
-            complete(success: false, message: "Please sign in first")
-            return
-        }
+    private func callSummarizeAPI(url: String, token: String) async throws -> SummarizeResult {
+        let endpoint = URL(string: "https://watchlater.up.railway.app/summarize")!
         
-        let apiURL = URL(string: "https://watchlater.up.railway.app/summarize")!
-        var request = URLRequest(url: apiURL)
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try? JSONEncoder().encode(["url": url])
+        request.timeoutInterval = 60
         
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    self?.complete(success: false, message: error.localizedDescription)
-                    return
-                }
-                
-                if let data = data,
-                   let response = try? JSONDecoder().decode(SummaryResponse.self, from: data),
-                   response.success {
-                    self?.complete(success: true, message: response.title ?? "Saved!")
-                } else {
-                    self?.complete(success: false, message: "Failed to save")
-                }
-            }
-        }.resume()
+        let body = ["url": url]
+        request.httpBody = try JSONEncoder().encode(body)
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try JSONDecoder().decode(SummarizeResult.self, from: data)
     }
     
-    private func complete(success: Bool, message: String) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + (success ? 1.0 : 2.0)) {
-            self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
-        }
+    private func showSuccess(title: String) {
+        let alert = UIAlertController(title: "✅ Saved!", message: title, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Done", style: .default) { [weak self] _ in
+            self?.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
+        })
+        present(alert, animated: true)
+    }
+    
+    private func showError(_ message: String) {
+        let alert = UIAlertController(title: "Error", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel) { [weak self] _ in
+            self?.extensionContext?.cancelRequest(withError: NSError(domain: "WatchLater", code: 1))
+        })
+        present(alert, animated: true)
     }
 }
 
-// Response model
-struct SummaryResponse: Codable {
+// MARK: - SwiftUI Share View
+
+struct ShareExtensionView: View {
+    let url: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+    
+    @State private var isLoading = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            
+            VStack(spacing: 20) {
+                // Header
+                HStack {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                    .foregroundStyle(.secondary)
+                    
+                    Spacer()
+                    
+                    Text("WatchLater")
+                        .font(.headline)
+                    
+                    Spacer()
+                    
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                    .opacity(0) // Balance the header
+                }
+                .padding(.horizontal)
+                
+                // URL Preview
+                HStack {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.title)
+                        .foregroundStyle(.red)
+                    
+                    Text(url)
+                        .lineLimit(2)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Spacer()
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+                .padding(.horizontal)
+                
+                // Save Button
+                Button(action: {
+                    isLoading = true
+                    onSave()
+                }) {
+                    HStack {
+                        if isLoading {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "sparkles")
+                            Text("Summarize & Save")
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(
+                        LinearGradient(
+                            colors: [.red, .orange],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .foregroundStyle(.white)
+                    .fontWeight(.semibold)
+                    .cornerRadius(12)
+                }
+                .disabled(isLoading)
+                .padding(.horizontal)
+                .padding(.bottom, 20)
+            }
+            .padding(.vertical, 20)
+            .background(Color(.systemBackground))
+            .cornerRadius(20, corners: [.topLeft, .topRight])
+        }
+        .background(Color.black.opacity(0.3))
+    }
+}
+
+// Corner radius helper
+extension View {
+    func cornerRadius(_ radius: CGFloat, corners: UIRectCorner) -> some View {
+        clipShape(RoundedCorner(radius: radius, corners: corners))
+    }
+}
+
+struct RoundedCorner: Shape {
+    var radius: CGFloat = .infinity
+    var corners: UIRectCorner = .allCorners
+    
+    func path(in rect: CGRect) -> Path {
+        let path = UIBezierPath(
+            roundedRect: rect,
+            byRoundingCorners: corners,
+            cornerRadii: CGSize(width: radius, height: radius)
+        )
+        return Path(path.cgPath)
+    }
+}
+
+// MARK: - API Models
+
+struct SummarizeResult: Codable {
     let success: Bool
     let title: String?
     let notionUrl: String?
