@@ -85,18 +85,24 @@ class UserProfile(BaseModel):
 async def get_current_user(authorization: Optional[str] = Header(None)):
     """Verify JWT and return user from Supabase."""
     if not authorization:
+        print("AUTH ERROR: No authorization header")
         raise HTTPException(status_code=401, detail="Authorization header required")
     
     if not authorization.startswith("Bearer "):
+        print(f"AUTH ERROR: Invalid format - got: {authorization[:20]}...")
         raise HTTPException(status_code=401, detail="Invalid authorization format")
     
     token = authorization.replace("Bearer ", "")
+    print(f"AUTH: Validating token (first 20 chars): {token[:20]}...")
     
     try:
         # Verify token with Supabase
         user_response = supabase.auth.get_user(token)
         if not user_response.user:
+            print("AUTH ERROR: get_user returned no user")
             raise HTTPException(status_code=401, detail="Invalid token")
+        
+        print(f"AUTH: Token valid for user {user_response.user.id}")
         
         # Get user profile from our users table
         user_id = user_response.user.id
@@ -104,6 +110,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         
         if not result.data:
             # Create user profile if doesn't exist
+            print(f"AUTH: Creating new user profile for {user_id}")
             new_user = {
                 "id": user_id,
                 "email": user_response.user.email,
@@ -113,8 +120,12 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
             supabase.table("users").insert(new_user).execute()
             return new_user
         
+        print(f"AUTH: Found existing user profile for {user_id}")
         return result.data
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"AUTH ERROR: Exception during validation: {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 

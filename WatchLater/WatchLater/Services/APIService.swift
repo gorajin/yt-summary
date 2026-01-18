@@ -56,7 +56,22 @@ class APIService {
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 401 {
+            print("API: /me returned 401 - token invalid")
+            throw APIError.unauthorized
+        }
+        
+        if httpResponse.statusCode != 200 {
+            print("API: /me returned \(httpResponse.statusCode)")
+            throw APIError.invalidResponse
+        }
+        
         return try JSONDecoder().decode(User.self, from: data)
     }
     
