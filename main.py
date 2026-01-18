@@ -648,15 +648,21 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
         )
         print(f"  ✓ Done → {notion_url}")
         
-        # Increment usage
-        increment_usage(user["id"])
+        # Increment usage (non-critical - don't fail if this errors)
+        try:
+            increment_usage(user["id"])
+        except Exception as usage_err:
+            print(f"  ⚠ Usage increment failed (non-critical): {usage_err}")
         
-        # Log summary
-        supabase.table("summaries").insert({
-            "user_id": user["id"],
-            "youtube_url": request.url,
-            "title": final_title
-        }).execute()
+        # Log summary (non-critical)
+        try:
+            supabase.table("summaries").insert({
+                "user_id": user["id"],
+                "youtube_url": request.url,
+                "title": final_title
+            }).execute()
+        except Exception as log_err:
+            print(f"  ⚠ Summary logging failed (non-critical): {log_err}")
         
         return SummarizeResponse(
             success=True,
