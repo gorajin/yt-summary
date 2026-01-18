@@ -179,7 +179,63 @@ def extract_video_id(url: str) -> Optional[str]:
 
 
 def get_transcript(url: str) -> tuple:
-    """Fetch transcript using yt-dlp. Returns (transcript, title)."""
+    """Fetch transcript. Tries youtube-transcript-api first, falls back to yt-dlp."""
+    
+    video_id = extract_video_id(url)
+    if not video_id:
+        raise Exception("Could not extract video ID")
+    
+    # Try youtube-transcript-api first (more reliable on servers)
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        
+        # Try to get transcript in order of preference
+        transcript_list = None
+        for lang in ['en', 'en-US', 'en-GB', 'ko']:
+            try:
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
+                break
+            except:
+                continue
+        
+        # Try auto-generated if manual not found
+        if not transcript_list:
+            try:
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            except:
+                pass
+        
+        if transcript_list:
+            transcript = ' '.join([entry['text'] for entry in transcript_list])
+            transcript = re.sub(r'\s+', ' ', transcript).strip()
+            
+            # Get title via simple API call
+            title = get_video_title(video_id)
+            print(f"  → Got transcript via youtube-transcript-api ({len(transcript)} chars)")
+            return transcript, title
+            
+    except ImportError:
+        print("  → youtube-transcript-api not installed, using yt-dlp")
+    except Exception as e:
+        print(f"  → youtube-transcript-api failed: {e}, trying yt-dlp")
+    
+    # Fallback to yt-dlp
+    return get_transcript_ytdlp(url)
+
+
+def get_video_title(video_id: str) -> str:
+    """Get video title using oembed API (no auth required)."""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        with urllib.request.urlopen(oembed_url, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            return data.get('title', 'Untitled Video')
+    except:
+        return 'Untitled Video'
+
+
+def get_transcript_ytdlp(url: str) -> tuple:
+    """Fetch transcript using yt-dlp (fallback method). Returns (transcript, title)."""
     
     ydl_opts = {
         'writesubtitles': True,

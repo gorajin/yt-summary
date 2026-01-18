@@ -4,3 +4,4 @@ yt-dlp>=2024.0.0
 notion-client==2.3.0
 python-dotenv==1.0.1
 supabase==2.10.0
+youtube-transcript-api==0.6.2
