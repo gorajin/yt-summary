@@ -102,6 +102,22 @@ struct HomeView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
+            .onAppear {
+                loadProfile()
+            }
+            .onChange(of: authManager.notionJustConnected) { _, connected in
+                if connected {
+                    authManager.notionJustConnected = false
+                    loadProfile()
+                }
+            }
+        }
+    }
+    
+    private func loadProfile() {
+        guard let token = authManager.accessToken else { return }
+        Task {
+            await viewModel.loadProfile(token: token)
         }
     }
     

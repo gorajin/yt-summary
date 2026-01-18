@@ -10,6 +10,7 @@ class AuthManager: ObservableObject {
     @Published var userEmail: String?
     @Published var accessToken: String?
     @Published var isGoogleSignInProgress = false
+    @Published var notionJustConnected = false
     
     private let tokenKey = "supabase_access_token"
     private let userIdKey = "supabase_user_id"
