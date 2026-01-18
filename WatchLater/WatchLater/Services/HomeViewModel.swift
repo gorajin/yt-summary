@@ -14,12 +14,31 @@ class HomeViewModel: ObservableObject {
     // MARK: - Load Profile
     
     func loadProfile(token: String) async {
+        // Debug: Test token with debug endpoint
+        await debugToken(token: token)
+        
         do {
             let user = try await api.getProfile(authToken: token)
             isNotionConnected = user.notionConnected
             summariesRemaining = user.summariesRemaining
+            print("Profile loaded: notionConnected=\(user.notionConnected)")
         } catch {
             print("Failed to load profile: \(error)")
+        }
+    }
+    
+    private func debugToken(token: String) async {
+        let endpoint = URL(string: "https://watchlater.up.railway.app/debug/token")!
+        var request = URLRequest(url: endpoint)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                print("🔍 DEBUG TOKEN RESULT: \(json)")
+            }
+        } catch {
+            print("Debug token request failed: \(error)")
         }
     }
     
