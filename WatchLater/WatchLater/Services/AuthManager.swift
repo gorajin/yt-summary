@@ -191,6 +191,57 @@ class AuthManager: ObservableObject {
             // Sync to shared defaults for Share Extension
             sharedDefaults?.set(token, forKey: tokenKey)
             sharedDefaults?.set(userId, forKey: userIdKey)
+            
+            // Attempt to refresh token in background
+            Task {
+                await refreshTokenIfNeeded()
+            }
+        }
+    }
+    
+    // MARK: - Token Refresh
+    
+    /// Refreshes the access token using the stored refresh token
+    func refreshTokenIfNeeded() async {
+        guard let refreshToken = UserDefaults.standard.string(forKey: refreshTokenKey) else {
+            print("No refresh token available")
+            return
+        }
+        
+        do {
+            let url = URL(string: "\(APIConfig.supabaseURL)/auth/v1/token?grant_type=refresh_token")!
+            
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(APIConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+            
+            let body = ["refresh_token": refreshToken]
+            request.httpBody = try JSONEncoder().encode(body)
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                print("Token refresh failed")
+                return
+            }
+            
+            let authResponse = try JSONDecoder().decode(SupabaseAuthResponse.self, from: data)
+            
+            if let newToken = authResponse.access_token {
+                await MainActor.run {
+                    saveSession(
+                        token: newToken,
+                        refreshToken: authResponse.refresh_token ?? refreshToken,
+                        userId: self.userId ?? "",
+                        email: self.userEmail ?? ""
+                    )
+                    print("✓ Token refreshed successfully")
+                }
+            }
+        } catch {
+            print("Token refresh error: \(error)")
         }
     }
 }

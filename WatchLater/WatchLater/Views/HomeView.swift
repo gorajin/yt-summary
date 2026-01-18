@@ -108,7 +108,11 @@ struct HomeView: View {
             .onChange(of: authManager.notionJustConnected) { _, connected in
                 if connected {
                     authManager.notionJustConnected = false
-                    loadProfile()
+                    // Refresh token first, then load profile
+                    Task {
+                        await authManager.refreshTokenIfNeeded()
+                        loadProfile()
+                    }
                 }
             }
         }
