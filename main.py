@@ -396,11 +396,27 @@ def get_transcript_ytdlp(url: str) -> tuple:
 # ============ Gemini Functions ============
 
 def summarize_with_gemini(transcript: str) -> dict:
-    """Summarize transcript using Gemini REST API."""
+    """Summarize transcript using Gemini REST API.
+    
+    Supports long-form content like 1+ hour podcasts by using Gemini 2.0 Flash's
+    large context window (up to 1M tokens). Transcripts up to ~120k characters 
+    (~1 hour of spoken content) are processed in full.
+    """
+    # Gemini 2.0 Flash can handle very large contexts
+    # 120k chars ≈ 30k tokens, well within limits for hour-long podcasts
+    max_transcript_length = 120000
+    transcript_text = transcript[:max_transcript_length]
+    
+    # Calculate approximate duration for context
+    word_count = len(transcript_text.split())
+    approx_minutes = word_count // 150  # ~150 words per minute speaking rate
+    
     prompt = f"""Analyze this YouTube video transcript and provide a structured summary.
 
+VIDEO LENGTH: Approximately {approx_minutes} minutes of content ({word_count:,} words)
+
 TRANSCRIPT:
-{transcript[:15000]}
+{transcript_text}
 
 Respond in this exact JSON format (no markdown, just raw JSON):
 {{
@@ -419,8 +435,10 @@ Respond in this exact JSON format (no markdown, just raw JSON):
 
 Guidelines:
 - Title should be descriptive (not clickbait)
-- 3-5 key takeaways that are actionable or memorable
-- 2-4 notable insights or "aha moments"
+- For short videos (under 20 min): 3-5 key takeaways, 2-3 insights
+- For long-form content (20+ min podcasts/interviews): 5-8 key takeaways, 3-5 insights
+- Capture the MOST IMPORTANT points across the ENTIRE video, not just the beginning
+- For interviews/podcasts: include notable quotes or perspectives from guests
 """
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
@@ -438,7 +456,8 @@ Guidelines:
         method='POST'
     )
     
-    with urllib.request.urlopen(req, timeout=60) as response:
+    # Longer timeout for processing long-form content (3 minutes)
+    with urllib.request.urlopen(req, timeout=180) as response:
         result = json.loads(response.read().decode('utf-8'))
     
     text = result['candidates'][0]['content']['parts'][0]['text'].strip()
