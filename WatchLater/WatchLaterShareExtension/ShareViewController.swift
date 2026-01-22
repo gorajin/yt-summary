@@ -59,9 +59,8 @@ class ShareViewController: UIViewController {
     }
     
     private func showShareUI(url: String) {
-        // Check if user is authenticated
-        let sharedDefaults = UserDefaults(suiteName: "group.com.watchlater.app")
-        guard let token = sharedDefaults?.string(forKey: "supabase_access_token") else {
+        // Check if user is authenticated (read from shared Keychain)
+        guard let token = KeychainHelper.get(forKey: "supabase_access_token") else {
             showError("Please sign in to WatchLater first")
             return
         }
@@ -158,6 +157,29 @@ struct ShareExtensionView: View {
     
     @State private var isLoading = false
     
+    /// Extract video ID from YouTube URL
+    private var videoId: String? {
+        let patterns = [
+            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"#,
+            #"(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})"#
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)),
+               let range = Range(match.range(at: 1), in: url) {
+                return String(url[range])
+            }
+        }
+        return nil
+    }
+    
+    /// YouTube thumbnail URL
+    private var thumbnailURL: URL? {
+        guard let videoId = videoId else { return nil }
+        return URL(string: "https://img.youtube.com/vi/\(videoId)/mqdefault.jpg")
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -184,16 +206,41 @@ struct ShareExtensionView: View {
                 }
                 .padding(.horizontal)
                 
-                // URL Preview
-                HStack {
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.title)
-                        .foregroundStyle(.red)
+                // Video Preview with Thumbnail
+                HStack(spacing: 12) {
+                    // Thumbnail
+                    if let thumbnailURL = thumbnailURL {
+                        AsyncImage(url: thumbnailURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .aspectRatio(16/9, contentMode: .fill)
+                                    .frame(width: 100, height: 56)
+                                    .cornerRadius(8)
+                            case .failure(_):
+                                thumbnailPlaceholder
+                            case .empty:
+                                thumbnailPlaceholder
+                                    .overlay(ProgressView().tint(.gray))
+                            @unknown default:
+                                thumbnailPlaceholder
+                            }
+                        }
+                    } else {
+                        thumbnailPlaceholder
+                    }
                     
-                    Text(url)
-                        .lineLimit(2)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("YouTube Video")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                        
+                        Text(url)
+                            .lineLimit(1)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     
                     Spacer()
                 }
@@ -204,6 +251,10 @@ struct ShareExtensionView: View {
                 
                 // Save Button
                 Button(action: {
+                    // Haptic feedback
+                    let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                    impactFeedback.impactOccurred()
+                    
                     isLoading = true
                     onSave()
                 }) {
@@ -238,6 +289,18 @@ struct ShareExtensionView: View {
             .cornerRadius(20, corners: [.topLeft, .topRight])
         }
         .background(Color.black.opacity(0.3))
+    }
+    
+    private var thumbnailPlaceholder: some View {
+        Rectangle()
+            .fill(Color(.systemGray5))
+            .frame(width: 100, height: 56)
+            .cornerRadius(8)
+            .overlay(
+                Image(systemName: "play.rectangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
+            )
     }
 }
 

@@ -146,10 +146,13 @@ class AuthManager: ObservableObject {
     // MARK: - Sign Out
     
     func signOut() {
-        UserDefaults.standard.removeObject(forKey: tokenKey)
-        UserDefaults.standard.removeObject(forKey: userIdKey)
+        // Clear tokens from Keychain
+        KeychainHelper.delete(forKey: tokenKey)
+        KeychainHelper.delete(forKey: userIdKey)
+        KeychainHelper.delete(forKey: refreshTokenKey)
+        
+        // Clear non-sensitive data from UserDefaults
         UserDefaults.standard.removeObject(forKey: emailKey)
-        UserDefaults.standard.removeObject(forKey: refreshTokenKey)
         
         isAuthenticated = false
         accessToken = nil
@@ -162,17 +165,15 @@ class AuthManager: ObservableObject {
     private let sharedDefaults = UserDefaults(suiteName: "group.com.watchlater.app")
     
     private func saveSession(token: String, refreshToken: String?, userId: String, email: String) {
-        // Save to standard UserDefaults
-        UserDefaults.standard.set(token, forKey: tokenKey)
-        UserDefaults.standard.set(userId, forKey: userIdKey)
-        UserDefaults.standard.set(email, forKey: emailKey)
+        // Save tokens securely to Keychain (shared with Share Extension via access group)
+        KeychainHelper.save(token, forKey: tokenKey)
+        KeychainHelper.save(userId, forKey: userIdKey)
         if let refreshToken = refreshToken {
-            UserDefaults.standard.set(refreshToken, forKey: refreshTokenKey)
+            KeychainHelper.save(refreshToken, forKey: refreshTokenKey)
         }
         
-        // Also save to shared App Group for Share Extension access
-        sharedDefaults?.set(token, forKey: tokenKey)
-        sharedDefaults?.set(userId, forKey: userIdKey)
+        // Save non-sensitive display data to UserDefaults
+        UserDefaults.standard.set(email, forKey: emailKey)
         
         self.accessToken = token
         self.userId = userId
@@ -181,16 +182,13 @@ class AuthManager: ObservableObject {
     }
     
     private func loadStoredSession() {
-        if let token = UserDefaults.standard.string(forKey: tokenKey),
-           let userId = UserDefaults.standard.string(forKey: userIdKey) {
+        // Load tokens from Keychain (secure storage)
+        if let token = KeychainHelper.get(forKey: tokenKey),
+           let userId = KeychainHelper.get(forKey: userIdKey) {
             self.accessToken = token
             self.userId = userId
             self.userEmail = UserDefaults.standard.string(forKey: emailKey)
             self.isAuthenticated = true
-            
-            // Sync to shared defaults for Share Extension
-            sharedDefaults?.set(token, forKey: tokenKey)
-            sharedDefaults?.set(userId, forKey: userIdKey)
             
             // Attempt to refresh token in background
             Task {

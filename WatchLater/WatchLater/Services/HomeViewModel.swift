@@ -14,8 +14,10 @@ class HomeViewModel: ObservableObject {
     // MARK: - Load Profile
     
     func loadProfile(token: String) async {
+        #if DEBUG
         // Debug: Test token with debug endpoint
         await debugToken(token: token)
+        #endif
         
         do {
             let user = try await api.getProfile(authToken: token)

@@ -27,6 +27,7 @@ class APIService {
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(["url": url])
@@ -54,6 +55,7 @@ class APIService {
         let endpoint = URL(string: "\(APIConfig.baseURL)/me")!
         
         var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 30
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         
         let (data, response) = try await URLSession.shared.data(for: request)

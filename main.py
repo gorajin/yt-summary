@@ -138,11 +138,37 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
 
 
 def check_rate_limit(user: dict) -> int:
-    """Check if user has remaining summaries. Returns remaining count."""
+    """Check if user has remaining summaries. Returns remaining count.
+    Also handles monthly reset if it's a new month.
+    """
     tier = user.get("subscription_tier", "free")
     
     if tier in ["pro", "lifetime"]:
         return -1  # Unlimited
+    
+    # Check if we need to reset (new month)
+    user_id = user.get("id")
+    reset_at = user.get("summaries_reset_at")
+    if reset_at and user_id:
+        try:
+            # Parse the reset timestamp
+            if isinstance(reset_at, str):
+                reset_date = datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
+            else:
+                reset_date = reset_at
+            
+            now = datetime.now(reset_date.tzinfo) if reset_date.tzinfo else datetime.now()
+            
+            # If reset was in a previous month, reset the counter
+            if reset_date.year < now.year or reset_date.month < now.month:
+                print(f"  → Resetting monthly usage for user {user_id} (last reset: {reset_date})")
+                supabase.table("users").update({
+                    "summaries_this_month": 0,
+                    "summaries_reset_at": now.isoformat()
+                }).eq("id", user_id).execute()
+                return FREE_TIER_LIMIT  # Full quota available
+        except Exception as e:
+            print(f"  ⚠ Usage reset check failed: {e}")
     
     used = user.get("summaries_this_month", 0)
     remaining = FREE_TIER_LIMIT - used
@@ -241,7 +267,7 @@ def get_video_title(video_id: str) -> str:
         with urllib.request.urlopen(oembed_url, timeout=10) as response:
             data = json.loads(response.read().decode('utf-8'))
             return data.get('title', 'Untitled Video')
-    except:
+    except (urllib.error.URLError, json.JSONDecodeError, KeyError, TimeoutError):
         return 'Untitled Video'
 
 
@@ -719,39 +745,14 @@ def get_friendly_error(error: str) -> str:
     return error
 
 
-# Legacy endpoint for backwards compatibility (no auth required)
+# Legacy endpoint - DEPRECATED
 @app.post("/summarize/legacy")
 async def summarize_legacy(request: SummarizeRequest):
-    """Legacy summarize endpoint using environment Notion token."""
-    notion_token = os.getenv("NOTION_TOKEN")
-    database_id = os.getenv("NOTION_DATABASE_ID")
-    
-    if not notion_token or not database_id:
-        raise HTTPException(status_code=500, detail="Legacy mode not configured")
-    
-    try:
-        video_id = extract_video_id(request.url)
-        if not video_id:
-            raise HTTPException(status_code=400, detail="Invalid YouTube URL")
-        
-        transcript, video_title = get_transcript(request.url)
-        summary = summarize_with_gemini(transcript)
-        final_title = summary.get("title") or video_title
-        
-        notion_url = create_notion_page(
-            notion_token=notion_token,
-            database_id=database_id,
-            title=final_title,
-            url=f"https://youtu.be/{video_id}",
-            one_liner=summary.get("oneLiner", ""),
-            takeaways=summary.get("keyTakeaways", []),
-            insights=summary.get("insights", [])
-        )
-        
-        return SummarizeResponse(success=True, title=final_title, notionUrl=notion_url)
-        
-    except Exception as e:
-        return SummarizeResponse(success=False, error=str(e))
+    """Legacy summarize endpoint - DEPRECATED. Use authenticated /summarize instead."""
+    raise HTTPException(
+        status_code=410, 
+        detail="This endpoint has been deprecated. Please use the WatchLater iOS app with authentication."
+    )
 
 
 if __name__ == "__main__":

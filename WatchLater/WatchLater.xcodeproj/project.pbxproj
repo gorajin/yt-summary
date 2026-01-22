@@ -17,8 +17,10 @@
 		A11111111111111111111120 /* AuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11111111111111111111121 /* AuthManager.swift */; };
 		A11111111111111111111122 /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11111111111111111111123 /* HomeViewModel.swift */; };
 		A11111111111111111111124 /* GoogleSignInService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11111111111111111111125 /* GoogleSignInService.swift */; };
+		A11111111111111111111126 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11111111111111111111127 /* KeychainHelper.swift */; };
 		B22222222222222222222221 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22222222222222222222222 /* ShareViewController.swift */; };
 		B22222222222222222222224 /* WatchLaterShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B22222222222222222222220 /* WatchLaterShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B2222222222222222222222C /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2222222222222222222222D /* KeychainHelper.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,6 +62,8 @@
 		B22222222222222222222220 /* WatchLaterShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WatchLaterShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B22222222222222222222222 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		B22222222222222222222223 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A11111111111111111111127 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		B2222222222222222222222D /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -118,6 +122,7 @@
 				A11111111111111111111121 /* AuthManager.swift */,
 				A11111111111111111111125 /* GoogleSignInService.swift */,
 				A11111111111111111111123 /* HomeViewModel.swift */,
+				A11111111111111111111127 /* KeychainHelper.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -126,6 +131,7 @@
 			isa = PBXGroup;
 			children = (
 				B22222222222222222222222 /* ShareViewController.swift */,
+				B2222222222222222222222D /* KeychainHelper.swift */,
 				B22222222222222222222223 /* Info.plist */,
 			);
 			path = WatchLaterShareExtension;
@@ -242,6 +248,7 @@
 				A11111111111111111111120 /* AuthManager.swift in Sources */,
 				A11111111111111111111122 /* HomeViewModel.swift in Sources */,
 				A11111111111111111111124 /* GoogleSignInService.swift in Sources */,
+				A11111111111111111111126 /* KeychainHelper.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -250,6 +257,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B22222222222222222222221 /* ShareViewController.swift in Sources */,
+				B2222222222222222222222C /* KeychainHelper.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
