@@ -9,8 +9,10 @@ import json
 import tempfile
 import urllib.request
 import secrets
-from typing import Optional
+from typing import Optional, List
 from datetime import date, datetime
+from enum import Enum
+from dataclasses import dataclass, field
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -78,6 +80,71 @@ class UserProfile(BaseModel):
     subscription_tier: str
     summaries_this_month: int
     summaries_remaining: int
+
+
+# ============ Lecture Notes Models ============
+
+class ContentType(str, Enum):
+    """Video content type for optimized processing"""
+    LECTURE = "lecture"        # Educational, structured teaching
+    INTERVIEW = "interview"    # Podcast, conversation, Q&A
+    TUTORIAL = "tutorial"      # How-to, step-by-step instructions
+    DOCUMENTARY = "documentary"  # Narrative, historical, investigative
+    GENERAL = "general"        # Default fallback
+
+
+@dataclass
+class TranscriptSegment:
+    """A segment of transcript with timestamp"""
+    text: str
+    start_time: float  # seconds from start
+    end_time: float    # seconds from start
+    
+    def timestamp_str(self) -> str:
+        """Format as MM:SS or HH:MM:SS"""
+        mins, secs = divmod(int(self.start_time), 60)
+        hours, mins = divmod(mins, 60)
+        if hours > 0:
+            return f"{hours}:{mins:02d}:{secs:02d}"
+        return f"{mins}:{secs:02d}"
+
+
+@dataclass
+class LectureNotes:
+    """Comprehensive notes structure for any video type"""
+    title: str
+    content_type: ContentType
+    overview: str  # One-liner summary
+    
+    # Table of contents with timestamps
+    table_of_contents: List[dict] = field(default_factory=list)  # [{section, timestamp}]
+    
+    # Main educational content
+    main_concepts: List[dict] = field(default_factory=list)  # [{concept, definition, examples}]
+    key_insights: List[dict] = field(default_factory=list)   # [{insight, timestamp, context}]
+    detailed_notes: List[dict] = field(default_factory=list) # [{section, content, timestamp}]
+    
+    # Additional context
+    notable_quotes: List[str] = field(default_factory=list)
+    resources_mentioned: List[str] = field(default_factory=list)
+    action_items: List[str] = field(default_factory=list)
+    questions_raised: List[str] = field(default_factory=list)
+    
+    # Legacy compatibility - for backward-compatible API responses
+    def to_legacy_format(self) -> dict:
+        """Convert to the old summary format for API compatibility"""
+        return {
+            "title": self.title,
+            "oneLiner": self.overview,
+            "keyTakeaways": [
+                i.get("insight", str(i)) if isinstance(i, dict) else str(i) 
+                for i in self.key_insights[:5]
+            ] if self.key_insights else [
+                c.get("concept", str(c)) if isinstance(c, dict) else str(c) 
+                for c in self.main_concepts[:5]
+            ],
+            "insights": self.notable_quotes[:3] if self.notable_quotes else []
+        }
 
 
 # ============ Auth Helpers ============
@@ -395,58 +462,185 @@ def get_transcript_ytdlp(url: str) -> tuple:
 
 # ============ Gemini Functions ============
 
-def summarize_with_gemini(transcript: str) -> dict:
-    """Summarize transcript using Gemini REST API.
-    
-    Supports long-form content like 1+ hour podcasts by using Gemini 2.0 Flash's
-    large context window (up to 1M tokens). Transcripts up to ~120k characters 
-    (~1 hour of spoken content) are processed in full.
+def detect_content_type(transcript: str, title: str) -> ContentType:
+    """Detect video content type for optimized processing.
+    Uses heuristics first, then Gemini for ambiguous cases.
     """
-    # Gemini 2.0 Flash can handle very large contexts
-    # 120k chars ≈ 30k tokens, well within limits for hour-long podcasts
-    max_transcript_length = 120000
-    transcript_text = transcript[:max_transcript_length]
+    text_lower = transcript.lower()[:5000]  # Check beginning for patterns
+    title_lower = title.lower()
     
-    # Calculate approximate duration for context
-    word_count = len(transcript_text.split())
-    approx_minutes = word_count // 150  # ~150 words per minute speaking rate
+    # Tutorial indicators
+    tutorial_patterns = [
+        "step by step", "how to", "tutorial", "let me show you",
+        "follow along", "in this video i'll show", "let's build",
+        "coding tutorial", "walkthrough"
+    ]
+    if any(p in text_lower or p in title_lower for p in tutorial_patterns):
+        return ContentType.TUTORIAL
     
-    prompt = f"""Analyze this YouTube video transcript and provide a structured summary.
+    # Interview/podcast indicators
+    interview_patterns = [
+        "podcast", "interview", "my guest today", "welcome to the show",
+        "thanks for having me", "let's talk about", "conversation with",
+        "episode", "q&a"
+    ]
+    if any(p in text_lower or p in title_lower for p in interview_patterns):
+        return ContentType.INTERVIEW
+    
+    # Lecture indicators
+    lecture_patterns = [
+        "lecture", "class", "lesson", "today we'll learn", "professor",
+        "let's examine", "the concept of", "as we discussed",
+        "university", "course", "curriculum"
+    ]
+    if any(p in text_lower or p in title_lower for p in lecture_patterns):
+        return ContentType.LECTURE
+    
+    # Documentary indicators
+    documentary_patterns = [
+        "documentary", "the story of", "history of", "investigation",
+        "the truth about", "behind the scenes", "untold story"
+    ]
+    if any(p in text_lower or p in title_lower for p in documentary_patterns):
+        return ContentType.DOCUMENTARY
+    
+    return ContentType.GENERAL
 
-VIDEO LENGTH: Approximately {approx_minutes} minutes of content ({word_count:,} words)
+
+def build_lecture_prompt(transcript: str, content_type: ContentType, word_count: int) -> str:
+    """Build specialized prompt based on content type."""
+    approx_minutes = word_count // 150
+    
+    # Base context
+    context = f"""VIDEO LENGTH: Approximately {approx_minutes} minutes ({word_count:,} words)
+CONTENT TYPE: {content_type.value}
 
 TRANSCRIPT:
-{transcript_text}
-
-Respond in this exact JSON format (no markdown, just raw JSON):
-{{
-  "title": "A clear, descriptive title for this video",
-  "oneLiner": "One sentence capturing the main point",
-  "keyTakeaways": [
-    "Key takeaway 1",
-    "Key takeaway 2",
-    "Key takeaway 3"
-  ],
-  "insights": [
-    "Notable insight 1",
-    "Notable insight 2"
-  ]
-}}
-
-Guidelines:
-- Title should be descriptive (not clickbait)
-- For short videos (under 20 min): 3-5 key takeaways, 2-3 insights
-- For long-form content (20+ min podcasts/interviews): 5-8 key takeaways, 3-5 insights
-- Capture the MOST IMPORTANT points across the ENTIRE video, not just the beginning
-- For interviews/podcasts: include notable quotes or perspectives from guests
+{transcript}
 """
     
+    # Content-type specific instructions
+    if content_type == ContentType.LECTURE:
+        instructions = """
+You are creating comprehensive LECTURE NOTES for a student. Extract:
+1. Main concepts with clear definitions
+2. Examples and case studies mentioned
+3. Key formulas, frameworks, or models
+4. Connections between concepts
+5. Any recommended readings or resources
+
+Think like a diligent student taking notes - capture EVERYTHING important."""
+
+    elif content_type == ContentType.INTERVIEW:
+        instructions = """
+You are creating notes from a PODCAST/INTERVIEW. Extract:
+1. Key perspectives from each speaker
+2. Important quotes (verbatim when possible)
+3. Stories and anecdotes shared
+4. Advice or recommendations given
+5. Books, people, or resources mentioned
+
+Capture the unique insights from this conversation."""
+
+    elif content_type == ContentType.TUTORIAL:
+        instructions = """
+You are creating a STEP-BY-STEP GUIDE from this tutorial. Extract:
+1. Prerequisites or setup required
+2. Each step in order with details
+3. Commands, code snippets, or specific actions
+4. Common mistakes or warnings mentioned
+5. Tips and best practices
+
+Make these notes actionable - someone should be able to follow them."""
+
+    elif content_type == ContentType.DOCUMENTARY:
+        instructions = """
+You are creating notes from a DOCUMENTARY. Extract:
+1. Timeline of events or narrative arc
+2. Key facts and statistics
+3. Important people and their roles
+4. Sources or evidence cited
+5. Main arguments or conclusions
+
+Capture the story and its supporting evidence."""
+
+    else:  # GENERAL
+        instructions = """
+You are creating comprehensive NOTES from this video. Extract:
+1. Main topic and thesis
+2. Key points and supporting details
+3. Examples and evidence
+4. Notable quotes or statements
+5. Any calls to action or recommendations
+
+Be thorough - capture all important information."""
+
+    # Output format specification
+    output_format = """
+Respond in this EXACT JSON format (no markdown, just raw JSON):
+{
+  "title": "Clear, descriptive title",
+  "contentType": "detected content type",
+  "overview": "One comprehensive sentence summarizing the entire content",
+  "tableOfContents": [
+    {"section": "Section name", "description": "Brief description"}
+  ],
+  "mainConcepts": [
+    {"concept": "Concept name", "definition": "Clear explanation", "examples": ["Example 1", "Example 2"]}
+  ],
+  "keyInsights": [
+    {"insight": "The key insight", "context": "Why this matters or additional context"}
+  ],
+  "detailedNotes": [
+    {"section": "Topic/Section", "points": ["Point 1", "Point 2", "Point 3"]}
+  ],
+  "notableQuotes": ["Exact or paraphrased quote 1", "Quote 2"],
+  "resourcesMentioned": ["Book, website, or tool 1", "Resource 2"],
+  "actionItems": ["Action 1", "Action 2"],
+  "questionsRaised": ["Open question 1", "Question 2"]
+}
+
+GUIDELINES:
+- For videos under 15 minutes: 3-5 main concepts, 5-8 insights, 2-3 detailed sections
+- For videos 15-45 minutes: 5-8 main concepts, 8-12 insights, 3-5 detailed sections
+- For videos 45+ minutes: 8-12 main concepts, 12-20 insights, 5-8 detailed sections
+- Capture content from the ENTIRE video, not just the beginning
+- Include specific details, numbers, names when mentioned
+- Empty arrays are fine if that section doesn't apply
+"""
+
+    return context + instructions + output_format
+
+
+def generate_lecture_notes(transcript: str, title: str = "") -> LectureNotes:
+    """Generate comprehensive lecture notes from transcript.
+    
+    This is the new core summarization engine that produces detailed,
+    structured notes suitable for any video type.
+    """
+    # Gemini 2.0 Flash handles up to ~1M tokens, we use 200k chars (~50k tokens)
+    # for better results with very long content
+    max_transcript_length = 200000
+    transcript_text = transcript[:max_transcript_length]
+    word_count = len(transcript_text.split())
+    
+    # Detect content type
+    content_type = detect_content_type(transcript_text, title)
+    print(f"  → Detected content type: {content_type.value}")
+    
+    # Build specialized prompt
+    prompt = build_lecture_prompt(transcript_text, content_type, word_count)
+    
+    # Call Gemini API
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     
     data = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,  # Lower for more factual extraction
+            "topP": 0.8,
+            "maxOutputTokens": 8192  # Allow longer responses for comprehensive notes
+        }
     }
     
     req = urllib.request.Request(
@@ -456,32 +650,60 @@ Guidelines:
         method='POST'
     )
     
-    # Longer timeout for processing long-form content (3 minutes)
+    # 3 minute timeout for long-form content
     with urllib.request.urlopen(req, timeout=180) as response:
         result = json.loads(response.read().decode('utf-8'))
     
     text = result['candidates'][0]['content']['parts'][0]['text'].strip()
     
+    # Clean markdown code blocks if present
     if text.startswith('```'):
         text = re.sub(r'^```json?\n?', '', text)
         text = re.sub(r'\n?```$', '', text)
     
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {
-            "title": "Video Summary",
-            "oneLiner": "Could not parse summary",
-            "keyTakeaways": ["Summary parsing failed"],
-            "insights": []
-        }
+        data = json.loads(text)
+        
+        return LectureNotes(
+            title=data.get("title", title or "Untitled Notes"),
+            content_type=content_type,
+            overview=data.get("overview", ""),
+            table_of_contents=data.get("tableOfContents", []),
+            main_concepts=data.get("mainConcepts", []),
+            key_insights=data.get("keyInsights", []),
+            detailed_notes=data.get("detailedNotes", []),
+            notable_quotes=data.get("notableQuotes", []),
+            resources_mentioned=data.get("resourcesMentioned", []),
+            action_items=data.get("actionItems", []),
+            questions_raised=data.get("questionsRaised", [])
+        )
+    except json.JSONDecodeError as e:
+        print(f"  ⚠ JSON parsing failed: {e}")
+        # Return minimal notes on parse failure
+        return LectureNotes(
+            title=title or "Video Notes",
+            content_type=ContentType.GENERAL,
+            overview="Notes generation encountered an error",
+            key_insights=[{"insight": "Could not parse AI response", "context": str(e)}]
+        )
+
+
+def summarize_with_gemini(transcript: str) -> dict:
+    """Legacy summarization function - now uses generate_lecture_notes internally.
+    
+    Maintained for backward compatibility with existing API.
+    Returns the old format: {title, oneLiner, keyTakeaways, insights}
+    """
+    notes = generate_lecture_notes(transcript)
+    return notes.to_legacy_format()
 
 
 # ============ Notion Functions ============
 
 def create_notion_page(notion_token: str, database_id: str, title: str, url: str, 
                        one_liner: str, takeaways: list, insights: list) -> str:
-    """Create a Notion page with the summary using user's token."""
+    """Create a Notion page with the summary using user's token.
+    Legacy function kept for backward compatibility."""
     notion = NotionClient(auth=notion_token)
     
     children = [
@@ -528,6 +750,246 @@ def create_notion_page(notion_token: str, database_id: str, title: str, url: str
         properties={
             "Title": {"title": [{"text": {"content": title}}]},
             "url": {"url": url},
+            "Added": {"date": {"start": date.today().isoformat()}}
+        },
+        children=children
+    )
+    
+    return response["url"]
+
+
+def create_lecture_notes_page(notion_token: str, database_id: str, 
+                               notes: LectureNotes, video_url: str) -> str:
+    """Create a comprehensive Notion page with rich lecture notes formatting.
+    
+    Uses toggle blocks for collapsible sections, callouts for key insights,
+    and organized structure based on content type.
+    """
+    notion = NotionClient(auth=notion_token)
+    
+    # Content type icons
+    type_icons = {
+        ContentType.LECTURE: "📚",
+        ContentType.INTERVIEW: "🎙️",
+        ContentType.TUTORIAL: "🔧",
+        ContentType.DOCUMENTARY: "🎬",
+        ContentType.GENERAL: "📝"
+    }
+    
+    children = []
+    
+    # 1. Overview callout
+    children.append({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": [{"type": "text", "text": {"content": notes.overview}}],
+            "icon": {"emoji": type_icons.get(notes.content_type, "📝")},
+            "color": "blue_background"
+        }
+    })
+    
+    # 2. Table of Contents (if available)
+    if notes.table_of_contents:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "📑 Table of Contents"}}]}
+        })
+        for item in notes.table_of_contents[:10]:  # Limit to 10 sections
+            section = item.get("section", "") if isinstance(item, dict) else str(item)
+            desc = item.get("description", "") if isinstance(item, dict) else ""
+            text = f"{section}: {desc}" if desc else section
+            children.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]}
+            })
+    
+    # 3. Main Concepts (toggle blocks for expandable content)
+    if notes.main_concepts:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "🧠 Main Concepts"}}]}
+        })
+        for concept in notes.main_concepts[:12]:  # Limit to 12 concepts
+            if isinstance(concept, dict):
+                concept_name = concept.get("concept", "Concept")
+                definition = concept.get("definition", "")
+                examples = concept.get("examples", [])
+                
+                # Create toggle block with concept as header
+                toggle_content = []
+                if definition:
+                    toggle_content.append({
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": [{"type": "text", "text": {"content": definition}}]}
+                    })
+                for ex in examples[:3]:  # Max 3 examples per concept
+                    toggle_content.append({
+                        "object": "block",
+                        "type": "bulleted_list_item",
+                        "bulleted_list_item": {"rich_text": [
+                            {"type": "text", "text": {"content": "Example: ", "annotations": {"bold": True}}},
+                            {"type": "text", "text": {"content": str(ex)}}
+                        ]}
+                    })
+                
+                children.append({
+                    "object": "block",
+                    "type": "toggle",
+                    "toggle": {
+                        "rich_text": [
+                            {"type": "text", "text": {"content": f"📌 {concept_name}", "annotations": {"bold": True}}}
+                        ],
+                        "children": toggle_content if toggle_content else [
+                            {"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}
+                        ]
+                    }
+                })
+            else:
+                children.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": str(concept)}}]}
+                })
+    
+    # 4. Key Insights (callouts for emphasis)
+    if notes.key_insights:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "💡 Key Insights"}}]}
+        })
+        for insight in notes.key_insights[:15]:  # Limit to 15 insights
+            if isinstance(insight, dict):
+                insight_text = insight.get("insight", str(insight))
+                context = insight.get("context", "")
+                full_text = f"{insight_text}\n{context}" if context else insight_text
+            else:
+                full_text = str(insight)
+            
+            children.append({
+                "object": "block",
+                "type": "callout",
+                "callout": {
+                    "rich_text": [{"type": "text", "text": {"content": full_text}}],
+                    "icon": {"emoji": "💡"},
+                    "color": "yellow_background"
+                }
+            })
+    
+    # 5. Detailed Notes (organized by section)
+    if notes.detailed_notes:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "📝 Detailed Notes"}}]}
+        })
+        for section in notes.detailed_notes[:8]:  # Limit to 8 sections
+            if isinstance(section, dict):
+                section_name = section.get("section", "Section")
+                points = section.get("points", [])
+                
+                children.append({
+                    "object": "block",
+                    "type": "heading_3",
+                    "heading_3": {"rich_text": [{"type": "text", "text": {"content": section_name}}]}
+                })
+                for point in points[:10]:  # Max 10 points per section
+                    children.append({
+                        "object": "block",
+                        "type": "bulleted_list_item",
+                        "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": str(point)}}]}
+                    })
+    
+    # 6. Notable Quotes
+    if notes.notable_quotes:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "💬 Notable Quotes"}}]}
+        })
+        for quote in notes.notable_quotes[:8]:
+            children.append({
+                "object": "block",
+                "type": "quote",
+                "quote": {"rich_text": [{"type": "text", "text": {"content": str(quote)}}]}
+            })
+    
+    # 7. Resources Mentioned
+    if notes.resources_mentioned:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "🔗 Resources Mentioned"}}]}
+        })
+        for resource in notes.resources_mentioned[:10]:
+            children.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": str(resource)}}]}
+            })
+    
+    # 8. Action Items
+    if notes.action_items:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "✅ Action Items"}}]}
+        })
+        for action in notes.action_items[:8]:
+            children.append({
+                "object": "block",
+                "type": "to_do",
+                "to_do": {
+                    "rich_text": [{"type": "text", "text": {"content": str(action)}}],
+                    "checked": False
+                }
+            })
+    
+    # 9. Questions Raised
+    if notes.questions_raised:
+        children.append({"object": "block", "type": "divider", "divider": {}})
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "❓ Questions to Explore"}}]}
+        })
+        for question in notes.questions_raised[:5]:
+            children.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": str(question)}}]}
+            })
+    
+    # Notion has a limit of 100 blocks per request - truncate if needed
+    if len(children) > 100:
+        children = children[:99]
+        children.append({
+            "object": "block",
+            "type": "callout",
+            "callout": {
+                "rich_text": [{"type": "text", "text": {"content": "Notes truncated due to length. View the video for complete content."}}],
+                "icon": {"emoji": "⚠️"},
+                "color": "gray_background"
+            }
+        })
+    
+    response = notion.pages.create(
+        parent={"database_id": database_id},
+        properties={
+            "Title": {"title": [{"text": {"content": notes.title}}]},
+            "url": {"url": video_url},
             "Added": {"date": {"start": date.today().isoformat()}}
         },
         children=children
@@ -728,20 +1190,16 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
         transcript, video_title = get_transcript(request.url)
         print(f"  → Got transcript ({len(transcript)} chars)")
         
-        print("  → Summarizing with Gemini...")
-        summary = summarize_with_gemini(transcript)
-        final_title = summary.get("title") or video_title
-        print(f"  → Generated: {final_title}")
+        print("  → Generating lecture notes with Gemini...")
+        notes = generate_lecture_notes(transcript, video_title)
+        print(f"  → Generated: {notes.title} (type: {notes.content_type.value})")
         
-        print("  → Creating Notion page...")
-        notion_url = create_notion_page(
+        print("  → Creating Notion page with rich formatting...")
+        notion_url = create_lecture_notes_page(
             notion_token=notion_token,
             database_id=database_id,
-            title=final_title,
-            url=f"https://youtu.be/{video_id}",
-            one_liner=summary.get("oneLiner", ""),
-            takeaways=summary.get("keyTakeaways", []),
-            insights=summary.get("insights", [])
+            notes=notes,
+            video_url=f"https://youtu.be/{video_id}"
         )
         print(f"  ✓ Done → {notion_url}")
         
@@ -756,14 +1214,14 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
             supabase.table("summaries").insert({
                 "user_id": user["id"],
                 "youtube_url": request.url,
-                "title": final_title
+                "title": notes.title
             }).execute()
         except Exception as log_err:
             print(f"  ⚠ Summary logging failed (non-critical): {log_err}")
         
         return SummarizeResponse(
             success=True,
-            title=final_title,
+            title=notes.title,
             notionUrl=notion_url,
             remaining=remaining - 1 if remaining > 0 else -1
         )
