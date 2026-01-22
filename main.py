@@ -205,7 +205,14 @@ def extract_video_id(url: str) -> Optional[str]:
 
 
 def get_transcript(url: str) -> tuple:
-    """Fetch transcript. Tries youtube-transcript-api first, falls back to yt-dlp."""
+    """Fetch transcript. Tries youtube-transcript-api first, falls back to yt-dlp.
+    
+    Supports multiple languages with preference order:
+    1. English (manual or auto)
+    2. Video's original language (auto-generated)
+    3. Translation to English (if available)
+    4. yt-dlp fallback with expanded language support
+    """
     
     video_id = extract_video_id(url)
     if not video_id:
@@ -217,38 +224,80 @@ def get_transcript(url: str) -> tuple:
     try:
         print("  → Trying youtube-transcript-api...")
         from youtube_transcript_api import YouTubeTranscriptApi
-        print("  → youtube-transcript-api imported successfully")
         
-        # Try to get transcript in order of preference
-        transcript_list = None
-        for lang in ['en', 'en-US', 'en-GB', 'ko']:
+        # Preferred language order
+        preferred_languages = ['en', 'en-US', 'en-GB', 'ko', 'ko-KR', 'ja', 'zh-Hans', 'zh-Hant', 'es', 'fr', 'de', 'pt']
+        
+        # Try using list_transcripts for better control
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            # Strategy 1: Try to find transcript in preferred languages
+            transcript_data = None
+            for lang in preferred_languages:
+                try:
+                    transcript = transcript_list.find_transcript([lang])
+                    transcript_data = transcript.fetch()
+                    print(f"  → Found transcript in language: {lang}")
+                    break
+                except:
+                    continue
+            
+            # Strategy 2: Get ANY available transcript (manual or generated)
+            if not transcript_data:
+                print("  → No preferred language found, trying any available transcript...")
+                try:
+                    # Try to get any generated transcript first (often best quality)
+                    for transcript in transcript_list:
+                        try:
+                            transcript_data = transcript.fetch()
+                            print(f"  → Using {transcript.language} ({transcript.language_code}) transcript")
+                            break
+                        except Exception as fetch_err:
+                            print(f"  → Failed to fetch {transcript.language_code}: {type(fetch_err).__name__}")
+                            continue
+                except:
+                    pass
+            
+            # Strategy 3: Try translation to English
+            if not transcript_data:
+                print("  → Trying translation to English...")
+                try:
+                    for transcript in transcript_list:
+                        if transcript.is_translatable:
+                            translated = transcript.translate('en')
+                            transcript_data = translated.fetch()
+                            print(f"  → Translated from {transcript.language} to English")
+                            break
+                except Exception as trans_err:
+                    print(f"  → Translation failed: {type(trans_err).__name__}")
+            
+            if transcript_data:
+                transcript = ' '.join([entry['text'] for entry in transcript_data])
+                transcript = re.sub(r'\s+', ' ', transcript).strip()
+                
+                title = get_video_title(video_id)
+                print(f"  → Got transcript via youtube-transcript-api ({len(transcript)} chars)")
+                return transcript, title
+                
+        except Exception as list_err:
+            print(f"  → list_transcripts failed: {type(list_err).__name__}: {list_err}")
+        
+        # Fallback: Try direct get_transcript with various languages  
+        print("  → Trying direct get_transcript...")
+        for lang in preferred_languages:
             try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                print(f"  → Found transcript in language: {lang}")
-                break
-            except Exception as lang_err:
-                print(f"  → No transcript in {lang}: {type(lang_err).__name__}")
+                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
+                transcript = ' '.join([entry['text'] for entry in transcript_data])
+                transcript = re.sub(r'\s+', ' ', transcript).strip()
+                
+                title = get_video_title(video_id)
+                print(f"  → Got transcript in {lang} ({len(transcript)} chars)")
+                return transcript, title
+            except:
                 continue
         
-        # Try auto-generated if manual not found
-        if not transcript_list:
-            try:
-                print("  → Trying auto-generated transcript...")
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-                print("  → Got auto-generated transcript")
-            except Exception as auto_err:
-                print(f"  → Auto-generated failed: {type(auto_err).__name__}: {auto_err}")
-        
-        if transcript_list:
-            transcript = ' '.join([entry['text'] for entry in transcript_list])
-            transcript = re.sub(r'\s+', ' ', transcript).strip()
-            
-            # Get title via simple API call
-            title = get_video_title(video_id)
-            print(f"  → Got transcript via youtube-transcript-api ({len(transcript)} chars)")
-            return transcript, title
-        else:
-            print("  → youtube-transcript-api returned no transcript, trying yt-dlp")
+        print("  → youtube-transcript-api could not get transcript, trying yt-dlp")
             
     except ImportError as ie:
         print(f"  → youtube-transcript-api not installed: {ie}, using yt-dlp")
@@ -274,10 +323,13 @@ def get_video_title(video_id: str) -> str:
 def get_transcript_ytdlp(url: str) -> tuple:
     """Fetch transcript using yt-dlp (fallback method). Returns (transcript, title)."""
     
+    # Expanded language support
+    subtitle_langs = ['en', 'en-US', 'en-GB', 'ko', 'ko-KR', 'ja', 'zh-Hans', 'zh-Hant', 'es', 'fr', 'de', 'pt']
+    
     ydl_opts = {
         'writesubtitles': True,
         'writeautomaticsub': True,
-        'subtitleslangs': ['en', 'en-US', 'en-GB', 'ko', 'ko-KR'],
+        'subtitleslangs': subtitle_langs,
         'subtitlesformat': 'json3',
         'skip_download': True,
         'quiet': True,
@@ -297,7 +349,7 @@ def get_transcript_ytdlp(url: str) -> tuple:
             transcript_url = None
             
             # Try manual subtitles first
-            for lang in ['en', 'en-US', 'en-GB', 'ko', 'ko-KR']:
+            for lang in subtitle_langs:
                 if lang in subtitles:
                     for fmt in subtitles[lang]:
                         if fmt.get('ext') == 'json3':
@@ -308,7 +360,7 @@ def get_transcript_ytdlp(url: str) -> tuple:
             
             # Fall back to auto-generated
             if not transcript_url:
-                for lang in ['en', 'en-US', 'en-GB', 'ko', 'ko-KR']:
+                for lang in subtitle_langs:
                     if lang in auto_captions:
                         for fmt in auto_captions[lang]:
                             if fmt.get('ext') == 'json3':
