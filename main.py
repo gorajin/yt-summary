@@ -376,6 +376,124 @@ def get_transcript(url: str) -> tuple:
     return get_transcript_ytdlp(url)
 
 
+def get_transcript_with_timestamps(url: str) -> tuple:
+    """Fetch transcript with timestamp data for each segment.
+    
+    Returns: (segments: List[TranscriptSegment], flat_text: str, title: str)
+    
+    This enhanced version preserves timing information for:
+    - Generating timestamped notes
+    - Creating clickable video links
+    - Identifying natural section breaks
+    """
+    video_id = extract_video_id(url)
+    if not video_id:
+        raise Exception("Could not extract video ID")
+    
+    print(f"  → Extracting timestamped transcript for: {video_id}")
+    
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        
+        preferred_languages = ['en', 'en-US', 'en-GB', 'ko', 'ko-KR', 'ja', 'zh-Hans', 'zh-Hant', 'es', 'fr', 'de', 'pt']
+        transcript_data = None
+        
+        # Try to get transcript with timestamps
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            # Strategy 1: Preferred languages
+            for lang in preferred_languages:
+                try:
+                    transcript = transcript_list.find_transcript([lang])
+                    transcript_data = transcript.fetch()
+                    print(f"  → Found timestamped transcript in: {lang}")
+                    break
+                except:
+                    continue
+            
+            # Strategy 2: Any available transcript
+            if not transcript_data:
+                for transcript in transcript_list:
+                    try:
+                        transcript_data = transcript.fetch()
+                        print(f"  → Using {transcript.language} timestamped transcript")
+                        break
+                    except:
+                        continue
+            
+            # Strategy 3: Translation
+            if not transcript_data:
+                for transcript in transcript_list:
+                    if transcript.is_translatable:
+                        try:
+                            translated = transcript.translate('en')
+                            transcript_data = translated.fetch()
+                            print(f"  → Translated to English with timestamps")
+                            break
+                        except:
+                            continue
+                            
+        except Exception as e:
+            print(f"  → list_transcripts failed: {e}")
+            # Fallback to direct fetch
+            for lang in preferred_languages:
+                try:
+                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
+                    print(f"  → Got timestamped transcript in {lang}")
+                    break
+                except:
+                    continue
+        
+        if transcript_data:
+            # Convert to TranscriptSegment objects
+            segments = []
+            for entry in transcript_data:
+                start = entry.get('start', 0)
+                duration = entry.get('duration', 0)
+                text = entry.get('text', '').strip()
+                if text:  # Skip empty segments
+                    segments.append(TranscriptSegment(
+                        text=text,
+                        start_time=start,
+                        end_time=start + duration
+                    ))
+            
+            # Also create flat text for backward compatibility
+            flat_text = ' '.join([s.text for s in segments])
+            flat_text = re.sub(r'\s+', ' ', flat_text).strip()
+            
+            title = get_video_title(video_id)
+            print(f"  → Got {len(segments)} timestamped segments ({len(flat_text)} chars)")
+            
+            return segments, flat_text, title
+            
+    except ImportError:
+        print("  → youtube-transcript-api not available")
+    except Exception as e:
+        print(f"  → Timestamped extraction failed: {e}")
+    
+    # Fallback: Get regular transcript and create segments without precise timestamps
+    print("  → Falling back to basic transcript (no timestamps)")
+    flat_text, title = get_transcript(url)
+    
+    # Create pseudo-segments (one per ~30 seconds of content assuming 150 wpm)
+    words = flat_text.split()
+    words_per_segment = 75  # ~30 seconds at 150 wpm
+    segments = []
+    
+    for i in range(0, len(words), words_per_segment):
+        chunk_words = words[i:i + words_per_segment]
+        estimated_start = (i / 150) * 60  # Estimate based on word position
+        segments.append(TranscriptSegment(
+            text=' '.join(chunk_words),
+            start_time=estimated_start,
+            end_time=estimated_start + 30
+        ))
+    
+    return segments, flat_text, title
+
+
 def get_video_title(video_id: str) -> str:
     """Get video title using oembed API (no auth required)."""
     try:
@@ -583,18 +701,20 @@ Respond in this EXACT JSON format (no markdown, just raw JSON):
   "contentType": "detected content type",
   "overview": "One comprehensive sentence summarizing the entire content",
   "tableOfContents": [
-    {"section": "Section name", "description": "Brief description"}
+    {"section": "Section name", "timestamp": "MM:SS", "description": "Brief description"}
   ],
   "mainConcepts": [
-    {"concept": "Concept name", "definition": "Clear explanation", "examples": ["Example 1", "Example 2"]}
+    {"concept": "Concept name", "definition": "Clear explanation", "timestamp": "MM:SS", "examples": ["Example 1", "Example 2"]}
   ],
   "keyInsights": [
-    {"insight": "The key insight", "context": "Why this matters or additional context"}
+    {"insight": "The key insight", "timestamp": "MM:SS", "context": "Why this matters or additional context"}
   ],
   "detailedNotes": [
-    {"section": "Topic/Section", "points": ["Point 1", "Point 2", "Point 3"]}
+    {"section": "Topic/Section", "timestamp": "MM:SS", "points": ["Point 1", "Point 2", "Point 3"]}
   ],
-  "notableQuotes": ["Exact or paraphrased quote 1", "Quote 2"],
+  "notableQuotes": [
+    {"quote": "Exact or paraphrased quote", "speaker": "Speaker name if known", "timestamp": "MM:SS"}
+  ],
   "resourcesMentioned": ["Book, website, or tool 1", "Resource 2"],
   "actionItems": ["Action 1", "Action 2"],
   "questionsRaised": ["Open question 1", "Question 2"]
@@ -602,11 +722,150 @@ Respond in this EXACT JSON format (no markdown, just raw JSON):
 
 GUIDELINES:
 - For videos under 15 minutes: 3-5 main concepts, 5-8 insights, 2-3 detailed sections
-- For videos 15-45 minutes: 5-8 main concepts, 8-12 insights, 3-5 detailed sections
+- For videos 15-45 minutes: 5-8 main concepts, 8-12 insights, 3-5 detailed sections  
 - For videos 45+ minutes: 8-12 main concepts, 12-20 insights, 5-8 detailed sections
 - Capture content from the ENTIRE video, not just the beginning
+- Include TIMESTAMPS (MM:SS format) when the topic/insight appears in the video
 - Include specific details, numbers, names when mentioned
 - Empty arrays are fine if that section doesn't apply
+"""
+
+    return context + instructions + output_format
+
+
+def build_timestamped_prompt(segments: List, content_type: ContentType, video_id: str = "") -> str:
+    """Build prompt with timestamped transcript for precise references.
+    
+    Formats the transcript to include timestamps every ~30 seconds,
+    allowing Gemini to correlate content with video times.
+    """
+    # Format segments with timestamps inline
+    formatted_chunks = []
+    current_chunk = []
+    last_timestamp_shown = -60  # Show timestamps every ~60 seconds
+    
+    for seg in segments:
+        # Add timestamp marker periodically
+        if seg.start_time - last_timestamp_shown >= 60:
+            if current_chunk:
+                formatted_chunks.append(' '.join(current_chunk))
+                current_chunk = []
+            timestamp = seg.timestamp_str()
+            current_chunk.append(f"\n[{timestamp}] ")
+            last_timestamp_shown = seg.start_time
+        current_chunk.append(seg.text)
+    
+    if current_chunk:
+        formatted_chunks.append(' '.join(current_chunk))
+    
+    timestamped_transcript = ''.join(formatted_chunks)
+    word_count = len(timestamped_transcript.split())
+    approx_minutes = word_count // 150
+    
+    # Calculate total duration from last segment
+    total_duration = segments[-1].end_time if segments else 0
+    duration_str = f"{int(total_duration // 60)}:{int(total_duration % 60):02d}"
+    
+    context = f"""VIDEO INFO:
+- Duration: {duration_str} (approximately {approx_minutes} minutes of spoken content)
+- Word count: {word_count:,} words
+- Content type: {content_type.value}
+{f"- Video ID: {video_id}" if video_id else ""}
+
+TIMESTAMPED TRANSCRIPT:
+The transcript below includes [MM:SS] timestamps. Use these to reference when topics appear.
+
+{timestamped_transcript}
+"""
+    
+    # Content-type specific instructions (same as before)
+    if content_type == ContentType.LECTURE:
+        instructions = """
+You are creating comprehensive LECTURE NOTES for a student. Extract:
+1. Main concepts with clear definitions - note WHEN each concept is introduced
+2. Examples and case studies mentioned
+3. Key formulas, frameworks, or models
+4. Connections between concepts
+5. Any recommended readings or resources
+
+Think like a diligent student taking notes - capture EVERYTHING important with timestamps."""
+
+    elif content_type == ContentType.INTERVIEW:
+        instructions = """
+You are creating notes from a PODCAST/INTERVIEW. Extract:
+1. Key perspectives from each speaker - note when they make their points
+2. Important quotes (verbatim when possible) with timestamps
+3. Stories and anecdotes shared
+4. Advice or recommendations given
+5. Books, people, or resources mentioned
+
+Capture the unique insights with precise timestamps for easy reference."""
+
+    elif content_type == ContentType.TUTORIAL:
+        instructions = """
+You are creating a STEP-BY-STEP GUIDE from this tutorial. Extract:
+1. Prerequisites or setup required
+2. Each step in order with timestamp when it starts
+3. Commands, code snippets, or specific actions
+4. Common mistakes or warnings mentioned
+5. Tips and best practices
+
+Make these notes actionable with timestamps so users can jump to each step."""
+
+    elif content_type == ContentType.DOCUMENTARY:
+        instructions = """
+You are creating notes from a DOCUMENTARY. Extract:
+1. Timeline of events or narrative arc with timestamps
+2. Key facts and statistics
+3. Important people and their roles
+4. Sources or evidence cited
+5. Main arguments or conclusions
+
+Capture the story with timestamps for key moments."""
+
+    else:  # GENERAL
+        instructions = """
+You are creating comprehensive NOTES from this video. Extract:
+1. Main topic and thesis
+2. Key points and supporting details - note when discussed
+3. Examples and evidence
+4. Notable quotes or statements with timestamps
+5. Any calls to action or recommendations
+
+Be thorough - capture all important information with timestamps."""
+
+    output_format = """
+Respond in this EXACT JSON format (no markdown, just raw JSON):
+{
+  "title": "Clear, descriptive title",
+  "contentType": "detected content type",
+  "overview": "One comprehensive sentence summarizing the entire content",
+  "tableOfContents": [
+    {"section": "Section name", "timestamp": "MM:SS", "description": "Brief description"}
+  ],
+  "mainConcepts": [
+    {"concept": "Concept name", "definition": "Clear explanation", "timestamp": "MM:SS", "examples": ["Example 1"]}
+  ],
+  "keyInsights": [
+    {"insight": "The key insight", "timestamp": "MM:SS", "context": "Why this matters"}
+  ],
+  "detailedNotes": [
+    {"section": "Topic/Section", "timestamp": "MM:SS", "points": ["Point 1", "Point 2"]}
+  ],
+  "notableQuotes": [
+    {"quote": "The exact quote", "speaker": "Speaker name", "timestamp": "MM:SS"}
+  ],
+  "resourcesMentioned": ["Book or resource 1"],
+  "actionItems": ["Action 1"],
+  "questionsRaised": ["Question 1"]
+}
+
+CRITICAL TIMESTAMP INSTRUCTIONS:
+- Use the [MM:SS] markers in the transcript to determine timestamps
+- Every table of contents section MUST have a timestamp
+- Key insights and concepts should have timestamps when they first appear
+- Notable quotes MUST have timestamps
+- Format: "MM:SS" (e.g., "5:30", "1:15:00" for longer videos)
 """
 
     return context + instructions + output_format
@@ -688,6 +947,107 @@ def generate_lecture_notes(transcript: str, title: str = "") -> LectureNotes:
         )
 
 
+def generate_lecture_notes_from_segments(
+    segments: List[TranscriptSegment], 
+    title: str = "",
+    video_id: str = ""
+) -> LectureNotes:
+    """Generate comprehensive lecture notes from timestamped transcript segments.
+    
+    This enhanced version uses timestamp information to:
+    - Create precise table of contents with video links
+    - Mark when each concept/insight appears in the video
+    - Enable clickable timestamps in final output
+    """
+    if not segments:
+        return LectureNotes(
+            title=title or "Video Notes",
+            content_type=ContentType.GENERAL,
+            overview="No transcript available",
+            key_insights=[]
+        )
+    
+    # Create flat text for content detection
+    flat_text = ' '.join([s.text for s in segments])
+    word_count = len(flat_text.split())
+    
+    # Detect content type
+    content_type = detect_content_type(flat_text, title)
+    print(f"  → Detected content type: {content_type.value}")
+    print(f"  → Processing {len(segments)} timestamped segments")
+    
+    # Build timestamped prompt
+    prompt = build_timestamped_prompt(segments, content_type, video_id)
+    
+    # Truncate prompt if too long (keep ~200k chars for transcript)
+    max_prompt_length = 250000
+    if len(prompt) > max_prompt_length:
+        print(f"  ⚠ Truncating prompt from {len(prompt)} to {max_prompt_length} chars")
+        prompt = prompt[:max_prompt_length]
+    
+    # Call Gemini API
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "topP": 0.8,
+            "maxOutputTokens": 8192
+        }
+    }
+    
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(data).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+        method='POST'
+    )
+    
+    with urllib.request.urlopen(req, timeout=180) as response:
+        result = json.loads(response.read().decode('utf-8'))
+    
+    text = result['candidates'][0]['content']['parts'][0]['text'].strip()
+    
+    # Clean markdown code blocks
+    if text.startswith('```'):
+        text = re.sub(r'^```json?\n?', '', text)
+        text = re.sub(r'\n?```$', '', text)
+    
+    try:
+        data = json.loads(text)
+        
+        # Process notable quotes - handle both old format (strings) and new format (objects)
+        notable_quotes = data.get("notableQuotes", [])
+        processed_quotes = []
+        for q in notable_quotes:
+            if isinstance(q, dict):
+                # New format with quote/speaker/timestamp
+                processed_quotes.append(q.get("quote", str(q)))
+            else:
+                # Old format (plain string)
+                processed_quotes.append(str(q))
+        
+        return LectureNotes(
+            title=data.get("title", title or "Untitled Notes"),
+            content_type=content_type,
+            overview=data.get("overview", ""),
+            table_of_contents=data.get("tableOfContents", []),
+            main_concepts=data.get("mainConcepts", []),
+            key_insights=data.get("keyInsights", []),
+            detailed_notes=data.get("detailedNotes", []),
+            notable_quotes=processed_quotes,
+            resources_mentioned=data.get("resourcesMentioned", []),
+            action_items=data.get("actionItems", []),
+            questions_raised=data.get("questionsRaised", [])
+        )
+    except json.JSONDecodeError as e:
+        print(f"  ⚠ JSON parsing failed: {e}")
+        # Fallback to non-timestamped version
+        print("  → Falling back to generate_lecture_notes")
+        return generate_lecture_notes(flat_text, title)
+
+
 def summarize_with_gemini(transcript: str) -> dict:
     """Legacy summarization function - now uses generate_lecture_notes internally.
     
@@ -759,13 +1119,32 @@ def create_notion_page(notion_token: str, database_id: str, title: str, url: str
 
 
 def create_lecture_notes_page(notion_token: str, database_id: str, 
-                               notes: LectureNotes, video_url: str) -> str:
+                               notes: LectureNotes, video_url: str,
+                               video_id: str = "") -> str:
     """Create a comprehensive Notion page with rich lecture notes formatting.
     
     Uses toggle blocks for collapsible sections, callouts for key insights,
-    and organized structure based on content type.
+    and organized structure based on content type. Includes clickable
+    YouTube timestamp links when video_id is provided.
     """
     notion = NotionClient(auth=notion_token)
+    
+    # Helper: Convert timestamp string to YouTube link
+    def timestamp_to_link(timestamp_str: str) -> str:
+        """Convert 'MM:SS' or 'HH:MM:SS' to YouTube URL with timestamp."""
+        if not video_id or not timestamp_str:
+            return ""
+        try:
+            parts = timestamp_str.replace(" ", "").split(":")
+            if len(parts) == 2:  # MM:SS
+                seconds = int(parts[0]) * 60 + int(parts[1])
+            elif len(parts) == 3:  # HH:MM:SS
+                seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            else:
+                return ""
+            return f"https://youtu.be/{video_id}?t={seconds}"
+        except (ValueError, IndexError):
+            return ""
     
     # Content type icons
     type_icons = {
@@ -789,7 +1168,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
         }
     })
     
-    # 2. Table of Contents (if available)
+    # 2. Table of Contents (if available) - with clickable timestamp links
     if notes.table_of_contents:
         children.append({"object": "block", "type": "divider", "divider": {}})
         children.append({
@@ -799,12 +1178,34 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
         })
         for item in notes.table_of_contents[:10]:  # Limit to 10 sections
             section = item.get("section", "") if isinstance(item, dict) else str(item)
+            timestamp = item.get("timestamp", "") if isinstance(item, dict) else ""
             desc = item.get("description", "") if isinstance(item, dict) else ""
-            text = f"{section}: {desc}" if desc else section
+            
+            # Build rich text with optional timestamp link
+            rich_text_parts = []
+            if timestamp and video_id:
+                link = timestamp_to_link(timestamp)
+                if link:
+                    rich_text_parts.append({
+                        "type": "text",
+                        "text": {"content": f"[{timestamp}] ", "link": {"url": link}},
+                        "annotations": {"color": "blue"}
+                    })
+            rich_text_parts.append({
+                "type": "text",
+                "text": {"content": section}
+            })
+            if desc:
+                rich_text_parts.append({
+                    "type": "text",
+                    "text": {"content": f" - {desc}"},
+                    "annotations": {"color": "gray"}
+                })
+            
             children.append({
                 "object": "block",
                 "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": text}}]}
+                "bulleted_list_item": {"rich_text": rich_text_parts}
             })
     
     # 3. Main Concepts (toggle blocks for expandable content)
@@ -858,7 +1259,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
                     "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": str(concept)}}]}
                 })
     
-    # 4. Key Insights (callouts for emphasis)
+    # 4. Key Insights (callouts for emphasis) - with clickable timestamps
     if notes.key_insights:
         children.append({"object": "block", "type": "divider", "divider": {}})
         children.append({
@@ -870,15 +1271,36 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
             if isinstance(insight, dict):
                 insight_text = insight.get("insight", str(insight))
                 context = insight.get("context", "")
-                full_text = f"{insight_text}\n{context}" if context else insight_text
+                timestamp = insight.get("timestamp", "")
+                
+                # Build rich text with optional timestamp link
+                rich_text_parts = []
+                if timestamp and video_id:
+                    link = timestamp_to_link(timestamp)
+                    if link:
+                        rich_text_parts.append({
+                            "type": "text",
+                            "text": {"content": f"⏱️ {timestamp} ", "link": {"url": link}},
+                            "annotations": {"color": "blue", "bold": True}
+                        })
+                rich_text_parts.append({
+                    "type": "text",
+                    "text": {"content": insight_text}
+                })
+                if context:
+                    rich_text_parts.append({
+                        "type": "text",
+                        "text": {"content": f"\n{context}"},
+                        "annotations": {"color": "gray"}
+                    })
             else:
-                full_text = str(insight)
+                rich_text_parts = [{"type": "text", "text": {"content": str(insight)}}]
             
             children.append({
                 "object": "block",
                 "type": "callout",
                 "callout": {
-                    "rich_text": [{"type": "text", "text": {"content": full_text}}],
+                    "rich_text": rich_text_parts,
                     "icon": {"emoji": "💡"},
                     "color": "yellow_background"
                 }
@@ -1186,12 +1608,12 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
         # Process video
         print(f"Processing for user {user['id']}: {request.url}")
         
-        print("  → Fetching transcript...")
-        transcript, video_title = get_transcript(request.url)
-        print(f"  → Got transcript ({len(transcript)} chars)")
+        print("  → Fetching timestamped transcript...")
+        segments, transcript, video_title = get_transcript_with_timestamps(request.url)
+        print(f"  → Got {len(segments)} segments ({len(transcript)} chars)")
         
-        print("  → Generating lecture notes with Gemini...")
-        notes = generate_lecture_notes(transcript, video_title)
+        print("  → Generating timestamped lecture notes with Gemini...")
+        notes = generate_lecture_notes_from_segments(segments, video_title, video_id)
         print(f"  → Generated: {notes.title} (type: {notes.content_type.value})")
         
         print("  → Creating Notion page with rich formatting...")
@@ -1199,7 +1621,8 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
             notion_token=notion_token,
             database_id=database_id,
             notes=notes,
-            video_url=f"https://youtu.be/{video_id}"
+            video_url=f"https://youtu.be/{video_id}",
+            video_id=video_id
         )
         print(f"  ✓ Done → {notion_url}")
         
