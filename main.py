@@ -1048,6 +1048,174 @@ def generate_lecture_notes_from_segments(
         return generate_lecture_notes(flat_text, title)
 
 
+# ============ Phase 4: Long-Form Chunked Processing ============
+
+def split_into_chunks(segments: List[TranscriptSegment], max_minutes: int = 30) -> List[List[TranscriptSegment]]:
+    """Split transcript segments into time-based chunks.
+    
+    Args:
+        segments: List of transcript segments with timestamps
+        max_minutes: Maximum duration per chunk in minutes
+        
+    Returns:
+        List of segment lists, each representing a chunk
+    """
+    if not segments:
+        return []
+    
+    max_seconds = max_minutes * 60
+    chunks = []
+    current_chunk = []
+    chunk_start = segments[0].start_time
+    
+    for segment in segments:
+        # Check if adding this segment would exceed chunk duration
+        if segment.start_time - chunk_start >= max_seconds and current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = []
+            chunk_start = segment.start_time
+        
+        current_chunk.append(segment)
+    
+    # Don't forget the last chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+
+def generate_notes_for_chunk(
+    segments: List[TranscriptSegment], 
+    chunk_index: int, 
+    total_chunks: int,
+    title: str,
+    video_id: str
+) -> LectureNotes:
+    """Generate notes for a single chunk of a long video.
+    
+    Includes context about which part of the video this chunk represents.
+    """
+    chunk_start = segments[0].timestamp_str() if segments else "0:00"
+    chunk_end = segments[-1].timestamp_str() if segments else "0:00"
+    
+    print(f"    → Processing chunk {chunk_index + 1}/{total_chunks} ({chunk_start} - {chunk_end})")
+    
+    # Modify title to indicate chunk
+    chunk_title = f"{title} (Part {chunk_index + 1}/{total_chunks})"
+    
+    return generate_lecture_notes_from_segments(segments, chunk_title, video_id)
+
+
+def synthesize_notes(chunk_notes: List[LectureNotes], original_title: str) -> LectureNotes:
+    """Synthesize multiple chunk notes into a single comprehensive LectureNotes object.
+    
+    Merges all insights, concepts, and details while removing duplicates.
+    """
+    if not chunk_notes:
+        return LectureNotes(
+            title=original_title or "Video Notes",
+            content_type=ContentType.GENERAL,
+            overview="No content available",
+            key_insights=[]
+        )
+    
+    if len(chunk_notes) == 1:
+        single = chunk_notes[0]
+        single.title = original_title  # Restore original title
+        return single
+    
+    # Determine dominant content type
+    content_types = [n.content_type for n in chunk_notes]
+    dominant_type = max(set(content_types), key=content_types.count)
+    
+    # Combine overviews into unified summary
+    overviews = [n.overview for n in chunk_notes if n.overview]
+    combined_overview = " ".join(overviews[:3])  # First 3 chunk overviews
+    if len(combined_overview) > 300:
+        combined_overview = combined_overview[:297] + "..."
+    
+    # Merge lists while preserving order (chunks are already ordered)
+    def merge_lists(attr_name: str, limit: int = 20) -> list:
+        result = []
+        seen = set()
+        for note in chunk_notes:
+            for item in getattr(note, attr_name, []):
+                # Create a simple hash for deduplication
+                if isinstance(item, dict):
+                    key = str(item.get("insight", item.get("concept", item.get("section", str(item)))))
+                else:
+                    key = str(item)
+                if key not in seen:
+                    seen.add(key)
+                    result.append(item)
+        return result[:limit]
+    
+    return LectureNotes(
+        title=original_title,
+        content_type=dominant_type,
+        overview=combined_overview,
+        table_of_contents=merge_lists("table_of_contents", 15),
+        main_concepts=merge_lists("main_concepts", 15),
+        key_insights=merge_lists("key_insights", 25),
+        detailed_notes=merge_lists("detailed_notes", 12),
+        notable_quotes=merge_lists("notable_quotes", 12),
+        resources_mentioned=merge_lists("resources_mentioned", 15),
+        action_items=merge_lists("action_items", 10),
+        questions_raised=merge_lists("questions_raised", 8)
+    )
+
+
+def process_long_transcript(
+    segments: List[TranscriptSegment], 
+    title: str = "",
+    video_id: str = ""
+) -> LectureNotes:
+    """Process very long transcripts (2+ hours) by chunking and synthesizing.
+    
+    For videos under 2 hours, delegates to the standard processing.
+    For longer videos, splits into 30-minute chunks, processes each,
+    then synthesizes into a unified result.
+    
+    Returns:
+        Comprehensive LectureNotes covering the entire video
+    """
+    if not segments:
+        return LectureNotes(
+            title=title or "Video Notes",
+            content_type=ContentType.GENERAL,
+            overview="No transcript available",
+            key_insights=[]
+        )
+    
+    # Calculate total duration
+    total_duration = segments[-1].end_time if segments else 0
+    total_minutes = total_duration / 60
+    
+    # Threshold: videos under 90 minutes use standard processing
+    # (200k chars handles ~80 minutes well)
+    if total_minutes < 90:
+        print(f"  → Video is {total_minutes:.0f} min, using standard processing")
+        return generate_lecture_notes_from_segments(segments, title, video_id)
+    
+    print(f"  → Long video detected ({total_minutes:.0f} min), using chunked processing")
+    
+    # Split into 30-minute chunks
+    chunks = split_into_chunks(segments, max_minutes=30)
+    print(f"  → Split into {len(chunks)} chunks")
+    
+    # Process each chunk
+    chunk_notes = []
+    for i, chunk in enumerate(chunks):
+        notes = generate_notes_for_chunk(chunk, i, len(chunks), title, video_id)
+        chunk_notes.append(notes)
+    
+    # Synthesize all chunk notes
+    print(f"  → Synthesizing {len(chunk_notes)} chunk notes")
+    final_notes = synthesize_notes(chunk_notes, title)
+    
+    return final_notes
+
+
 def summarize_with_gemini(transcript: str) -> dict:
     """Legacy summarization function - now uses generate_lecture_notes internally.
     
@@ -1208,7 +1376,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
                 "bulleted_list_item": {"rich_text": rich_text_parts}
             })
     
-    # 3. Main Concepts (toggle blocks for expandable content)
+    # 3. Main Concepts (toggle blocks for expandable content) - with clickable timestamps
     if notes.main_concepts:
         children.append({"object": "block", "type": "divider", "divider": {}})
         children.append({
@@ -1221,6 +1389,23 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
                 concept_name = concept.get("concept", "Concept")
                 definition = concept.get("definition", "")
                 examples = concept.get("examples", [])
+                timestamp = concept.get("timestamp", "")
+                
+                # Build toggle header with optional timestamp link
+                toggle_header = []
+                if timestamp and video_id:
+                    link = timestamp_to_link(timestamp)
+                    if link:
+                        toggle_header.append({
+                            "type": "text",
+                            "text": {"content": f"[{timestamp}] ", "link": {"url": link}},
+                            "annotations": {"color": "blue"}
+                        })
+                toggle_header.append({
+                    "type": "text",
+                    "text": {"content": f"📌 {concept_name}"},
+                    "annotations": {"bold": True}
+                })
                 
                 # Create toggle block with concept as header
                 toggle_content = []
@@ -1235,7 +1420,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
                         "object": "block",
                         "type": "bulleted_list_item",
                         "bulleted_list_item": {"rich_text": [
-                            {"type": "text", "text": {"content": "Example: ", "annotations": {"bold": True}}},
+                            {"type": "text", "text": {"content": "Example: "}, "annotations": {"bold": True}},
                             {"type": "text", "text": {"content": str(ex)}}
                         ]}
                     })
@@ -1244,9 +1429,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
                     "object": "block",
                     "type": "toggle",
                     "toggle": {
-                        "rich_text": [
-                            {"type": "text", "text": {"content": f"📌 {concept_name}", "annotations": {"bold": True}}}
-                        ],
+                        "rich_text": toggle_header,
                         "children": toggle_content if toggle_content else [
                             {"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}
                         ]
@@ -1612,8 +1795,8 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
         segments, transcript, video_title = get_transcript_with_timestamps(request.url)
         print(f"  → Got {len(segments)} segments ({len(transcript)} chars)")
         
-        print("  → Generating timestamped lecture notes with Gemini...")
-        notes = generate_lecture_notes_from_segments(segments, video_title, video_id)
+        print("  → Generating lecture notes (auto-detects long videos)...")
+        notes = process_long_transcript(segments, video_title, video_id)
         print(f"  → Generated: {notes.title} (type: {notes.content_type.value})")
         
         print("  → Creating Notion page with rich formatting...")
