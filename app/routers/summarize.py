@@ -4,7 +4,9 @@ Summarize API router.
 Provides the main /summarize endpoint for processing YouTube videos.
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..models import SummarizeRequest, SummarizeResponse
 from ..services.youtube import extract_video_id, get_transcript_with_timestamps
@@ -14,6 +16,10 @@ from .auth import get_current_user, check_rate_limit, increment_usage, supabase
 
 
 router = APIRouter(tags=["summarize"])
+
+# Rate limiter for abuse prevention (per-IP)
+# These limits are generous for normal users but prevent abuse
+limiter = Limiter(key_func=get_remote_address)
 
 
 def get_friendly_error(error: str) -> str:
@@ -48,10 +54,15 @@ def get_friendly_error(error: str) -> str:
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
-async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_user)):
-    """Create a summary (authenticated)."""
+@limiter.limit("5/minute")  # 5 summaries per minute per IP - generous for normal use
+async def summarize(request: Request, body: SummarizeRequest, user: dict = Depends(get_current_user)):
+    """Create a summary (authenticated).
+    
+    Rate limited to 5 requests per minute per IP to prevent abuse.
+    Normal users rarely need more than 1-2 per minute.
+    """
     try:
-        # Check rate limit
+        # Check user-level rate limit (monthly quota)
         remaining = check_rate_limit(user)
         
         # Check Notion is connected
@@ -62,15 +73,15 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
             raise HTTPException(status_code=400, detail="Please connect your Notion first")
         
         # Validate URL
-        video_id = extract_video_id(request.url)
+        video_id = extract_video_id(body.url)
         if not video_id:
             raise HTTPException(status_code=400, detail="Invalid YouTube URL")
         
         # Process video
-        print(f"Processing for user {user['id']}: {request.url}")
+        print(f"Processing for user {user['id']}: {body.url}")
         
         print("  → Fetching timestamped transcript...")
-        segments, transcript, video_title = get_transcript_with_timestamps(request.url)
+        segments, transcript, video_title = get_transcript_with_timestamps(body.url)
         print(f"  → Got {len(segments)} segments ({len(transcript)} chars)")
         
         print("  → Generating lecture notes (auto-detects long videos)...")
@@ -97,7 +108,7 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
         try:
             supabase.table("summaries").insert({
                 "user_id": user["id"],
-                "youtube_url": request.url,
+                "youtube_url": body.url,
                 "title": notes.title,
                 "notion_url": notion_url  # Store for history feature
             }).execute()
@@ -122,7 +133,7 @@ async def summarize(request: SummarizeRequest, user: dict = Depends(get_current_
 
 
 @router.post("/summarize/legacy")
-async def summarize_legacy(request: SummarizeRequest):
+async def summarize_legacy(body: SummarizeRequest):
     """Legacy summarize endpoint - DEPRECATED. Use authenticated /summarize instead."""
     raise HTTPException(
         status_code=410, 
