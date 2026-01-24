@@ -24,8 +24,14 @@ CREATE TABLE IF NOT EXISTS public.summaries (
     user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
     youtube_url TEXT NOT NULL,
     title TEXT,
+    notion_url TEXT,                                    -- NEW: Store Notion page URL for history
+    deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,   -- NEW: Soft delete timestamp
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Migration for existing installations:
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS notion_url TEXT;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
 
 -- Function to increment summary count
 CREATE OR REPLACE FUNCTION increment_summaries(p_user_id UUID)

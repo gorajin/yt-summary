@@ -116,13 +116,13 @@ class ShareViewController: UIViewController {
     }
     
     private func callSummarizeAPI(url: String, token: String) async throws -> SummarizeResult {
-        let endpoint = URL(string: "https://watchlater.up.railway.app/summarize")!
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summarize")!
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 60
+        request.timeoutInterval = 120
         
         let body = ["url": url]
         request.httpBody = try JSONEncoder().encode(body)

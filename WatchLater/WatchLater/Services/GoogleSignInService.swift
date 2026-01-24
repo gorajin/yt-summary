@@ -18,7 +18,7 @@ class GoogleSignInService: NSObject, ObservableObject, ASWebAuthenticationPresen
     /// Returns the callback URL containing access tokens
     func signIn() async throws -> URL {
         // Build the Supabase OAuth URL for Google
-        var components = URLComponents(string: "\(APIConfig.supabaseURL)/auth/v1/authorize")!
+        var components = URLComponents(string: "\(AppConfig.supabaseURL)/auth/v1/authorize")!
         components.queryItems = [
             URLQueryItem(name: "provider", value: "google"),
             URLQueryItem(name: "redirect_to", value: "watchlater://auth/callback"),
