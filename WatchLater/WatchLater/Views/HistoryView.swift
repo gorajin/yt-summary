@@ -72,10 +72,10 @@ struct HistoryView: View {
     }
     
     private func fetchSummaries(token: String) async throws -> [SummaryHistoryItem] {
-        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summaries")!
+        let endpoint = URL(string: "\(APIConfig.baseURL)/summaries")!
         
         var request = URLRequest(url: endpoint)
-        request.timeoutInterval = AppConfig.apiTimeout
+        request.timeoutInterval = APIConfig.apiTimeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
         let (data, response) = try await URLSession.shared.data(for: request)

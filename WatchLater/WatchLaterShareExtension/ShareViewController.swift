@@ -116,7 +116,7 @@ class ShareViewController: UIViewController {
     }
     
     private func callSummarizeAPI(url: String, token: String) async throws -> SummarizeResult {
-        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summarize")!
+        let endpoint = URL(string: "https://watchlater.up.railway.app/summarize")!
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
