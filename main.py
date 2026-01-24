@@ -28,12 +28,17 @@ load_dotenv()
 
 app = FastAPI(title="YouTube Summary API", version="2.0.0")
 
-# CORS for iOS app
+# CORS configuration
+# Note: iOS apps don't send Origin headers the same way browsers do,
+# so we need permissive settings for mobile app compatibility.
+# For production with web clients, consider restricting allow_origins.
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
+    allow_credentials=True,  # Allow cookies/auth headers
+    allow_methods=["GET", "POST", "OPTIONS"],  # Only methods we actually use
+    allow_headers=["Authorization", "Content-Type"],  # Only headers we need
 )
 
 # Environment variables
@@ -57,6 +62,25 @@ if SUPABASE_URL and SUPABASE_KEY:
 
 # Free tier limits
 FREE_TIER_LIMIT = 10
+
+# Preferred transcript languages (shared across all extraction methods)
+PREFERRED_LANGUAGES = [
+    'en', 'en-US', 'en-GB',  # English variants
+    'ko', 'ko-KR',            # Korean
+    'ja',                     # Japanese
+    'zh-Hans', 'zh-Hant',     # Chinese
+    'es', 'fr', 'de', 'pt'    # European languages
+]
+
+# Gemini API configuration
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_API_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
+# Validate critical API keys at startup
+if not GEMINI_API_KEY:
+    print("⚠ WARNING: GEMINI_API_KEY not set - summarization will fail")
+else:
+    print("✓ Gemini API key configured")
 
 
 # ============ Models ============
@@ -156,11 +180,12 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Authorization header required")
     
     if not authorization.startswith("Bearer "):
-        print(f"AUTH ERROR: Invalid format - got: {authorization[:20]}...")
+        print(f"AUTH ERROR: Invalid format - expected 'Bearer <token>'")  # Don't log actual content
         raise HTTPException(status_code=401, detail="Invalid authorization format")
     
     token = authorization.replace("Bearer ", "")
-    print(f"AUTH: Validating token (first 20 chars): {token[:20]}...")
+    token_length_category = "short" if len(token) < 100 else "medium" if len(token) < 500 else "long"
+    print(f"AUTH: Validating {token_length_category} token ({len(token)} chars)")
     
     try:
         # Verify token with Supabase
@@ -293,21 +318,19 @@ def get_transcript(url: str) -> tuple:
         from youtube_transcript_api import YouTubeTranscriptApi
         
         # Preferred language order
-        preferred_languages = ['en', 'en-US', 'en-GB', 'ko', 'ko-KR', 'ja', 'zh-Hans', 'zh-Hant', 'es', 'fr', 'de', 'pt']
-        
         # Try using list_transcripts for better control
         try:
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             
             # Strategy 1: Try to find transcript in preferred languages
             transcript_data = None
-            for lang in preferred_languages:
+            for lang in PREFERRED_LANGUAGES:
                 try:
                     transcript = transcript_list.find_transcript([lang])
                     transcript_data = transcript.fetch()
                     print(f"  → Found transcript in language: {lang}")
                     break
-                except:
+                except Exception:
                     continue
             
             # Strategy 2: Get ANY available transcript (manual or generated)
@@ -323,7 +346,7 @@ def get_transcript(url: str) -> tuple:
                         except Exception as fetch_err:
                             print(f"  → Failed to fetch {transcript.language_code}: {type(fetch_err).__name__}")
                             continue
-                except:
+                except Exception:
                     pass
             
             # Strategy 3: Try translation to English
@@ -352,7 +375,7 @@ def get_transcript(url: str) -> tuple:
         
         # Fallback: Try direct get_transcript with various languages  
         print("  → Trying direct get_transcript...")
-        for lang in preferred_languages:
+        for lang in PREFERRED_LANGUAGES:
             try:
                 transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
                 transcript = ' '.join([entry['text'] for entry in transcript_data])
@@ -361,7 +384,7 @@ def get_transcript(url: str) -> tuple:
                 title = get_video_title(video_id)
                 print(f"  → Got transcript in {lang} ({len(transcript)} chars)")
                 return transcript, title
-            except:
+            except Exception:
                 continue
         
         print("  → youtube-transcript-api could not get transcript, trying yt-dlp")
@@ -395,7 +418,6 @@ def get_transcript_with_timestamps(url: str) -> tuple:
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         
-        preferred_languages = ['en', 'en-US', 'en-GB', 'ko', 'ko-KR', 'ja', 'zh-Hans', 'zh-Hant', 'es', 'fr', 'de', 'pt']
         transcript_data = None
         
         # Try to get transcript with timestamps
@@ -403,13 +425,13 @@ def get_transcript_with_timestamps(url: str) -> tuple:
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             
             # Strategy 1: Preferred languages
-            for lang in preferred_languages:
+            for lang in PREFERRED_LANGUAGES:
                 try:
                     transcript = transcript_list.find_transcript([lang])
                     transcript_data = transcript.fetch()
                     print(f"  → Found timestamped transcript in: {lang}")
                     break
-                except:
+                except Exception:
                     continue
             
             # Strategy 2: Any available transcript
@@ -419,7 +441,7 @@ def get_transcript_with_timestamps(url: str) -> tuple:
                         transcript_data = transcript.fetch()
                         print(f"  → Using {transcript.language} timestamped transcript")
                         break
-                    except:
+                    except Exception:
                         continue
             
             # Strategy 3: Translation
@@ -431,18 +453,18 @@ def get_transcript_with_timestamps(url: str) -> tuple:
                             transcript_data = translated.fetch()
                             print(f"  → Translated to English with timestamps")
                             break
-                        except:
+                        except Exception:
                             continue
                             
         except Exception as e:
             print(f"  → list_transcripts failed: {e}")
             # Fallback to direct fetch
-            for lang in preferred_languages:
+            for lang in PREFERRED_LANGUAGES:
                 try:
                     transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
                     print(f"  → Got timestamped transcript in {lang}")
                     break
-                except:
+                except Exception:
                     continue
         
         if transcript_data:
@@ -508,13 +530,10 @@ def get_video_title(video_id: str) -> str:
 def get_transcript_ytdlp(url: str) -> tuple:
     """Fetch transcript using yt-dlp (fallback method). Returns (transcript, title)."""
     
-    # Expanded language support
-    subtitle_langs = ['en', 'en-US', 'en-GB', 'ko', 'ko-KR', 'ja', 'zh-Hans', 'zh-Hant', 'es', 'fr', 'de', 'pt']
-    
     ydl_opts = {
         'writesubtitles': True,
         'writeautomaticsub': True,
-        'subtitleslangs': subtitle_langs,
+        'subtitleslangs': PREFERRED_LANGUAGES,
         'subtitlesformat': 'json3',
         'skip_download': True,
         'quiet': True,
@@ -534,7 +553,7 @@ def get_transcript_ytdlp(url: str) -> tuple:
             transcript_url = None
             
             # Try manual subtitles first
-            for lang in subtitle_langs:
+            for lang in PREFERRED_LANGUAGES:
                 if lang in subtitles:
                     for fmt in subtitles[lang]:
                         if fmt.get('ext') == 'json3':
@@ -545,7 +564,7 @@ def get_transcript_ytdlp(url: str) -> tuple:
             
             # Fall back to auto-generated
             if not transcript_url:
-                for lang in subtitle_langs:
+                for lang in PREFERRED_LANGUAGES:
                     if lang in auto_captions:
                         for fmt in auto_captions[lang]:
                             if fmt.get('ext') == 'json3':
@@ -579,6 +598,68 @@ def get_transcript_ytdlp(url: str) -> tuple:
 
 
 # ============ Gemini Functions ============
+
+import time
+
+def call_gemini_api(prompt: str, max_retries: int = 3, timeout: int = 180) -> dict:
+    """Call Gemini API with retry logic and exponential backoff.
+    
+    Args:
+        prompt: The prompt to send to Gemini
+        max_retries: Maximum number of retry attempts (default 3)
+        timeout: Request timeout in seconds (default 180)
+    
+    Returns:
+        Parsed JSON response from Gemini
+        
+    Raises:
+        Exception: If all retries fail
+    """
+    url = f"{GEMINI_API_ENDPOINT}?key={GEMINI_API_KEY}"
+    
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "topP": 0.8,
+            "maxOutputTokens": 8192
+        }
+    }
+    
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode('utf-8'))
+                
+        except urllib.error.HTTPError as e:
+            last_error = e
+            if e.code == 429:  # Rate limited
+                wait_time = (2 ** attempt) * 2  # 2, 4, 8 seconds
+                print(f"    ⚠ Rate limited, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait_time)
+            elif e.code >= 500:  # Server error
+                wait_time = (2 ** attempt) * 1  # 1, 2, 4 seconds
+                print(f"    ⚠ Server error {e.code}, retrying in {wait_time}s ({attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                raise  # Don't retry client errors (4xx except 429)
+                
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_error = e
+            wait_time = (2 ** attempt) * 1
+            print(f"    ⚠ Network error, retrying in {wait_time}s ({attempt + 1}/{max_retries})")
+            time.sleep(wait_time)
+    
+    raise Exception(f"Gemini API failed after {max_retries} retries: {last_error}")
+
 
 def detect_content_type(transcript: str, title: str) -> ContentType:
     """Detect video content type for optimized processing.
@@ -890,28 +971,8 @@ def generate_lecture_notes(transcript: str, title: str = "") -> LectureNotes:
     # Build specialized prompt
     prompt = build_lecture_prompt(transcript_text, content_type, word_count)
     
-    # Call Gemini API
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.3,  # Lower for more factual extraction
-            "topP": 0.8,
-            "maxOutputTokens": 8192  # Allow longer responses for comprehensive notes
-        }
-    }
-    
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(data).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-        method='POST'
-    )
-    
-    # 3 minute timeout for long-form content
-    with urllib.request.urlopen(req, timeout=180) as response:
-        result = json.loads(response.read().decode('utf-8'))
+    # Call Gemini API with retry logic
+    result = call_gemini_api(prompt)
     
     text = result['candidates'][0]['content']['parts'][0]['text'].strip()
     
@@ -985,27 +1046,8 @@ def generate_lecture_notes_from_segments(
         print(f"  ⚠ Truncating prompt from {len(prompt)} to {max_prompt_length} chars")
         prompt = prompt[:max_prompt_length]
     
-    # Call Gemini API
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "topP": 0.8,
-            "maxOutputTokens": 8192
-        }
-    }
-    
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(data).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-        method='POST'
-    )
-    
-    with urllib.request.urlopen(req, timeout=180) as response:
-        result = json.loads(response.read().decode('utf-8'))
+    # Call Gemini API with retry logic
+    result = call_gemini_api(prompt)
     
     text = result['candidates'][0]['content']['parts'][0]['text'].strip()
     
