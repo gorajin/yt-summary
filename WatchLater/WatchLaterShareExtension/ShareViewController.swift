@@ -127,8 +127,40 @@ class ShareViewController: UIViewController {
         let body = ["url": url]
         request.httpBody = try JSONEncoder().encode(body)
         
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return try JSONDecoder().decode(SummarizeResult.self, from: data)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        // Debug: log the raw response
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("API Response: \(responseString.prefix(500))")
+        }
+        
+        // Check HTTP status
+        if let httpResponse = response as? HTTPURLResponse {
+            print("HTTP Status: \(httpResponse.statusCode)")
+            
+            if httpResponse.statusCode == 401 {
+                throw NSError(domain: "WatchLater", code: 401, 
+                    userInfo: [NSLocalizedDescriptionKey: "Please sign in to the WatchLater app first"])
+            }
+            
+            if httpResponse.statusCode == 429 {
+                throw NSError(domain: "WatchLater", code: 429,
+                    userInfo: [NSLocalizedDescriptionKey: "Rate limit exceeded. Please wait a moment."])
+            }
+        }
+        
+        do {
+            return try JSONDecoder().decode(SummarizeResult.self, from: data)
+        } catch {
+            print("JSON Decode Error: \(error)")
+            // Try to extract error message from response
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw NSError(domain: "WatchLater", code: 0, 
+                    userInfo: [NSLocalizedDescriptionKey: detail])
+            }
+            throw error
+        }
     }
     
     private func showSuccess(title: String) {
@@ -147,6 +179,7 @@ class ShareViewController: UIViewController {
         present(alert, animated: true)
     }
 }
+
 
 // MARK: - SwiftUI Share View
 
@@ -332,4 +365,5 @@ struct SummarizeResult: Codable {
     let title: String?
     let notionUrl: String?
     let error: String?
+    let remaining: Int?  // Summaries remaining this month
 }
