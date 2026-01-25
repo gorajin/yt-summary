@@ -255,15 +255,29 @@ async def notion_auth_callback(code: str, state: str):
         search_results = notion.search(filter={"property": "object", "value": "database"}).get("results", [])
         
         database_id = None
+        first_database_id = None  # Fallback to any database
+        
         for db in search_results:
+            if not first_database_id:
+                first_database_id = db["id"]
+            
             title = db.get("title", [{}])[0].get("plain_text", "")
-            if "YouTube" in title or "Watch" in title or "Summary" in title:
+            title_lower = title.lower()
+            
+            # Match common database names for video/learning content
+            keywords = ["youtube", "watch", "summary", "video", "notes", "learning", "lecture", "content"]
+            if any(kw in title_lower for kw in keywords):
                 database_id = db["id"]
-                print(f"Found existing database: {title} ({database_id})")
+                print(f"Found matching database: {title} ({database_id})")
                 break
         
+        # Fallback: use first available database if no keyword match
+        if not database_id and first_database_id:
+            print(f"No keyword match - using first available database: {first_database_id}")
+            database_id = first_database_id
+        
         if not database_id:
-            print("No matching database found - user will need to create one")
+            print("No databases found - user will need to create one and grant access")
         
         supabase.table("users").update({
             "notion_access_token": access_token,
