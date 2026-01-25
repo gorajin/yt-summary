@@ -276,8 +276,46 @@ async def notion_auth_callback(code: str, state: str):
             print(f"No keyword match - using first available database: {first_database_id}")
             database_id = first_database_id
         
+        # If no databases at all, try to create one
         if not database_id:
-            print("No databases found - user will need to create one and grant access")
+            print("No databases found - attempting to create 'YouTube Summaries' database...")
+            try:
+                # Search for pages we can use as parent
+                page_results = notion.search(filter={"property": "object", "value": "page"}).get("results", [])
+                
+                if page_results:
+                    # Use the first page as parent
+                    parent_page_id = page_results[0]["id"]
+                    print(f"Using page {parent_page_id} as parent for new database")
+                    
+                    # Create a database with the required schema
+                    new_db = notion.databases.create(
+                        parent={"type": "page_id", "page_id": parent_page_id},
+                        title=[{"type": "text", "text": {"content": "YouTube Summaries"}}],
+                        properties={
+                            "Title": {"title": {}},
+                            "URL": {"url": {}},
+                            "Type": {
+                                "select": {
+                                    "options": [
+                                        {"name": "Lecture", "color": "blue"},
+                                        {"name": "Tutorial", "color": "green"},
+                                        {"name": "Interview", "color": "purple"},
+                                        {"name": "Documentary", "color": "orange"},
+                                        {"name": "General", "color": "gray"}
+                                    ]
+                                }
+                            },
+                            "Date Added": {"date": {}}
+                        }
+                    )
+                    database_id = new_db["id"]
+                    print(f"✓ Created new database: YouTube Summaries ({database_id})")
+                else:
+                    print("No pages found to use as parent - user needs to share a page first")
+                    
+            except Exception as db_create_err:
+                print(f"Failed to create database: {db_create_err}")
         
         supabase.table("users").update({
             "notion_access_token": access_token,
