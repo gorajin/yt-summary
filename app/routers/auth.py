@@ -292,7 +292,7 @@ async def get_profile(user: dict = Depends(get_current_user)):
     return UserProfile(
         id=user["id"],
         email=user["email"],
-        notion_connected=bool(user.get("notion_access_token")),
+        notion_connected=bool(user.get("notion_access_token") and user.get("notion_database_id")),
         subscription_tier=tier,
         summaries_this_month=used,
         summaries_remaining=remaining
