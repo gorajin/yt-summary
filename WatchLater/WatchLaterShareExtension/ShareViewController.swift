@@ -135,31 +135,54 @@ class ShareViewController: UIViewController {
         }
         
         // Check HTTP status
-        if let httpResponse = response as? HTTPURLResponse {
-            print("HTTP Status: \(httpResponse.statusCode)")
-            
-            if httpResponse.statusCode == 401 {
-                throw NSError(domain: "WatchLater", code: 401, 
-                    userInfo: [NSLocalizedDescriptionKey: "Please sign in to the WatchLater app first"])
-            }
-            
-            if httpResponse.statusCode == 429 {
-                throw NSError(domain: "WatchLater", code: 429,
-                    userInfo: [NSLocalizedDescriptionKey: "Rate limit exceeded. Please wait a moment."])
-            }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "WatchLater", code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid server response"])
         }
         
+        print("HTTP Status: \(httpResponse.statusCode)")
+        
+        // Handle specific error codes
+        if httpResponse.statusCode == 401 {
+            throw NSError(domain: "WatchLater", code: 401, 
+                userInfo: [NSLocalizedDescriptionKey: "Please sign in to the WatchLater app first"])
+        }
+        
+        if httpResponse.statusCode == 429 {
+            throw NSError(domain: "WatchLater", code: 429,
+                userInfo: [NSLocalizedDescriptionKey: "Rate limit exceeded. Please wait a moment."])
+        }
+        
+        // Handle all other HTTP errors (400, 500, etc.) BEFORE trying to decode
+        if httpResponse.statusCode >= 400 {
+            // Backend returns {"detail": "error message"} for HTTP errors
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw NSError(domain: "WatchLater", code: httpResponse.statusCode,
+                    userInfo: [NSLocalizedDescriptionKey: detail])
+            }
+            throw NSError(domain: "WatchLater", code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Server error (\(httpResponse.statusCode))"])
+        }
+        
+        // Only decode SummarizeResult for successful responses
         do {
             return try JSONDecoder().decode(SummarizeResult.self, from: data)
         } catch {
             print("JSON Decode Error: \(error)")
-            // Try to extract error message from response
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let detail = json["detail"] as? String {
-                throw NSError(domain: "WatchLater", code: 0, 
-                    userInfo: [NSLocalizedDescriptionKey: detail])
+            // Fallback: try to extract any error message
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let detail = json["detail"] as? String {
+                    throw NSError(domain: "WatchLater", code: 0, 
+                        userInfo: [NSLocalizedDescriptionKey: detail])
+                }
+                if let errorMsg = json["error"] as? String {
+                    throw NSError(domain: "WatchLater", code: 0,
+                        userInfo: [NSLocalizedDescriptionKey: errorMsg])
+                }
             }
-            throw error
+            throw NSError(domain: "WatchLater", code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to read server response"])
         }
     }
     

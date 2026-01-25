@@ -50,6 +50,16 @@ class APIService {
             throw APIError.rateLimited
         }
         
+        // Handle all other HTTP errors before trying to decode
+        if httpResponse.statusCode >= 400 {
+            // Try to extract error message from backend response
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("Server error (\(httpResponse.statusCode))")
+        }
+        
         return try JSONDecoder().decode(SummaryResponse.self, from: data)
     }
     
@@ -108,6 +118,7 @@ enum APIError: LocalizedError {
     case rateLimited
     case invalidURL
     case networkError(Error)
+    case serverError(String)
     
     var errorDescription: String? {
         switch self {
@@ -121,6 +132,8 @@ enum APIError: LocalizedError {
             return "Invalid URL"
         case .networkError(let error):
             return error.localizedDescription
+        case .serverError(let message):
+            return message
         }
     }
 }
