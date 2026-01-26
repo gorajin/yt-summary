@@ -54,7 +54,7 @@ def get_friendly_error(error: str) -> str:
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
-@limiter.limit("5/minute")  # 5 summaries per minute per IP - generous for normal use
+@limiter.limit("10/minute")  # 10 summaries per minute per IP - allows for retries
 async def summarize(request: Request, body: SummarizeRequest, user: dict = Depends(get_current_user)):
     """Create a summary (authenticated).
     
