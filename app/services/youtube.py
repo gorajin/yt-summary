@@ -20,21 +20,43 @@ from ..models import TranscriptSegment
 
 
 def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
-    """Retry a function with exponential backoff on 429 errors.
+    """Retry a function with exponential backoff on rate limit errors.
     
     YouTube rate limits aggressively on cloud IPs, so we need to
-    back off and retry when we hit 429 errors.
+    back off and retry when we hit rate limit errors.
+    
+    YouTube disguises rate limits in multiple ways:
+    - HTTP 429 Too Many Requests
+    - ParseError (returns empty XML response)
+    - YouTubeRequestFailed
     """
     last_error = None
     for attempt in range(max_retries):
         try:
-            return func()
+            result = func()
+            # Also check if result is None on first attempt (might be a silent failure)
+            if result is None and attempt == 0:
+                print(f"  → Got empty result, waiting {base_delay}s before retry...")
+                time.sleep(base_delay)
+                continue
+            return result
         except Exception as e:
             error_str = str(e).lower()
-            # Check if it's a 429 or rate limit error
-            if '429' in error_str or 'too many' in error_str or 'rate' in error_str:
-                wait_time = base_delay * (2 ** attempt)  # 2, 4, 8 seconds
-                print(f"  → YouTube rate limit hit, waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}")
+            error_type = type(e).__name__
+            
+            # Check if it's a rate limit error (including disguised ones)
+            is_rate_limit = (
+                '429' in error_str or 
+                'too many' in error_str or 
+                'rate' in error_str or
+                'parseerror' in error_type.lower() or  # Empty XML response = rate limit
+                'no element found' in error_str or      # XML parsing failed = empty response
+                'youtuberequestfailed' in error_type.lower()  # Generic YouTube block
+            )
+            
+            if is_rate_limit:
+                wait_time = base_delay * (2 ** attempt)  # exponential: 2, 4, 8 or 3, 6, 12 etc
+                print(f"  → YouTube blocking detected ({error_type}), waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}")
                 time.sleep(wait_time)
                 last_error = e
             else:
@@ -208,7 +230,8 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
             available_langs.append(f"{t.language_code}({'manual' if not t.is_generated else 'auto'})")
         print(f"  → Available transcripts: {', '.join(available_langs) if available_langs else 'none'}")
         
-        transcript_data = None
+        # Track the last "rate limit like" error to propagate for retry
+        last_rate_limit_error = None
         
         # Strategy 1: Preferred languages (English, Korean, etc.)
         for lang in PREFERRED_LANGUAGES:
@@ -218,9 +241,13 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
                 print(f"  → Found transcript in: {lang}")
                 return transcript_data
             except Exception as e:
-                # Only log if it's not a simple "not found" error
                 err_str = str(e).lower()
-                if 'could not find' not in err_str and 'no transcript' not in err_str:
+                err_type = type(e).__name__.lower()
+                # Track rate-limit-like errors for potential retry
+                if 'parseerror' in err_type or 'no element found' in err_str or 'youtuberequestfailed' in err_type:
+                    last_rate_limit_error = e
+                    print(f"  → Strategy 1 ({lang}): {type(e).__name__} (will retry)")
+                elif 'could not find' not in err_str and 'no transcript' not in err_str:
                     print(f"  → Strategy 1 ({lang}): {type(e).__name__}")
                 continue
         
@@ -232,6 +259,10 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
                 print(f"  → Using {transcript.language} ({transcript.language_code}) transcript")
                 return transcript_data
             except Exception as e:
+                err_type = type(e).__name__.lower()
+                err_str = str(e).lower()
+                if 'parseerror' in err_type or 'no element found' in err_str or 'youtuberequestfailed' in err_type:
+                    last_rate_limit_error = e
                 print(f"  → Failed to fetch {transcript.language_code}: {type(e).__name__}: {e}")
                 continue
         
@@ -245,8 +276,16 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
                     print(f"  → Translated from {transcript.language_code} to English")
                     return transcript_data
                 except Exception as e:
+                    err_type = type(e).__name__.lower()
+                    if 'parseerror' in err_type or 'youtuberequestfailed' in err_type:
+                        last_rate_limit_error = e
                     print(f"  → Translation from {transcript.language_code} failed: {type(e).__name__}")
                     continue
+        
+        # If we had a rate-limit-like error, raise it so retry logic can catch
+        if last_rate_limit_error:
+            print(f"  → All strategies failed with rate-limit-like error, propagating for retry")
+            raise last_rate_limit_error
         
         print("  → All transcript strategies failed")
         return None
