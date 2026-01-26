@@ -54,12 +54,14 @@ def get_friendly_error(error: str) -> str:
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
-@limiter.limit("10/minute")  # 10 summaries per minute per IP - allows for retries
+@limiter.limit("60/minute")  # Generous limit - user quota is the real protection
 async def summarize(request: Request, body: SummarizeRequest, user: dict = Depends(get_current_user)):
     """Create a summary (authenticated).
     
-    Rate limited to 5 requests per minute per IP to prevent abuse.
-    Normal users rarely need more than 1-2 per minute.
+    Rate limited to 60 requests per minute per IP. This is generous because:
+    - User quota (monthly limit) is the real abuse protection
+    - Mobile networks often share IPs causing false positives
+    - Processing takes 10-30s anyway, natural rate limiting
     """
     try:
         # Check user-level rate limit (monthly quota)
