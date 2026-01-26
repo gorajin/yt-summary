@@ -5,8 +5,6 @@ Provides the main /summarize endpoint for processing YouTube videos.
 """
 
 from fastapi import APIRouter, HTTPException, Depends, Request
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from ..models import SummarizeRequest, SummarizeResponse
 from ..services.youtube import extract_video_id, get_transcript_with_timestamps
@@ -16,10 +14,6 @@ from .auth import get_current_user, check_rate_limit, increment_usage, supabase
 
 
 router = APIRouter(tags=["summarize"])
-
-# Rate limiter for abuse prevention (per-IP)
-# These limits are generous for normal users but prevent abuse
-limiter = Limiter(key_func=get_remote_address)
 
 
 def get_friendly_error(error: str) -> str:
@@ -54,14 +48,13 @@ def get_friendly_error(error: str) -> str:
 
 
 @router.post("/summarize", response_model=SummarizeResponse)
-@limiter.limit("60/minute")  # Generous limit - user quota is the real protection
+# NOTE: No IP-based rate limit - user quota (check_rate_limit) is the real protection
+# IP limits caused false positives on mobile networks and Railway shared IPs
 async def summarize(request: Request, body: SummarizeRequest, user: dict = Depends(get_current_user)):
     """Create a summary (authenticated).
     
-    Rate limited to 60 requests per minute per IP. This is generous because:
-    - User quota (monthly limit) is the real abuse protection
-    - Mobile networks often share IPs causing false positives
-    - Processing takes 10-30s anyway, natural rate limiting
+    Protected by user-level monthly quota, not IP-based limits.
+    Processing takes 10-30s anyway which provides natural rate limiting.
     """
     try:
         # Check user-level rate limit (monthly quota)
