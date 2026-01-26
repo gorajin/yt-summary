@@ -201,38 +201,54 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
         
         # Single consolidated approach - get list of transcripts once
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # Log available transcripts for debugging
+        available_langs = []
+        for t in transcript_list:
+            available_langs.append(f"{t.language_code}({'manual' if not t.is_generated else 'auto'})")
+        print(f"  → Available transcripts: {', '.join(available_langs) if available_langs else 'none'}")
+        
         transcript_data = None
         
-        # Strategy 1: Preferred languages (English, etc.)
+        # Strategy 1: Preferred languages (English, Korean, etc.)
         for lang in PREFERRED_LANGUAGES:
             try:
                 transcript = transcript_list.find_transcript([lang])
                 transcript_data = transcript.fetch()
                 print(f"  → Found transcript in: {lang}")
                 return transcript_data
-            except Exception:
+            except Exception as e:
+                # Only log if it's not a simple "not found" error
+                err_str = str(e).lower()
+                if 'could not find' not in err_str and 'no transcript' not in err_str:
+                    print(f"  → Strategy 1 ({lang}): {type(e).__name__}")
                 continue
         
-        # Strategy 2: Any available transcript
+        # Strategy 2: Any available transcript (iterate through all)
+        print("  → Trying any available transcript...")
         for transcript in transcript_list:
             try:
                 transcript_data = transcript.fetch()
-                print(f"  → Using {transcript.language} transcript")
+                print(f"  → Using {transcript.language} ({transcript.language_code}) transcript")
                 return transcript_data
-            except Exception:
+            except Exception as e:
+                print(f"  → Failed to fetch {transcript.language_code}: {type(e).__name__}: {e}")
                 continue
         
         # Strategy 3: Translation to English
+        print("  → Trying translation to English...")
         for transcript in transcript_list:
             if transcript.is_translatable:
                 try:
                     translated = transcript.translate('en')
                     transcript_data = translated.fetch()
-                    print(f"  → Translated to English")
+                    print(f"  → Translated from {transcript.language_code} to English")
                     return transcript_data
-                except Exception:
+                except Exception as e:
+                    print(f"  → Translation from {transcript.language_code} failed: {type(e).__name__}")
                     continue
         
+        print("  → All transcript strategies failed")
         return None
     
     # Try with retry logic for 429 errors
