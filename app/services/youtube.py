@@ -8,6 +8,7 @@ from YouTube videos using multiple fallback methods.
 import os
 import re
 import json
+import time
 import tempfile
 import urllib.request
 from typing import Optional, List, Tuple
@@ -16,6 +17,31 @@ import yt_dlp
 
 from ..config import PREFERRED_LANGUAGES
 from ..models import TranscriptSegment
+
+
+def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
+    """Retry a function with exponential backoff on 429 errors.
+    
+    YouTube rate limits aggressively on cloud IPs, so we need to
+    back off and retry when we hit 429 errors.
+    """
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            error_str = str(e).lower()
+            # Check if it's a 429 or rate limit error
+            if '429' in error_str or 'too many' in error_str or 'rate' in error_str:
+                wait_time = base_delay * (2 ** attempt)  # 2, 4, 8 seconds
+                print(f"  → YouTube rate limit hit, waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait_time)
+                last_error = e
+            else:
+                # Not a rate limit error, don't retry
+                raise
+    # All retries exhausted
+    raise last_error if last_error else Exception("Retry failed")
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -157,6 +183,8 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
     - Generating timestamped notes
     - Creating clickable video links
     - Identifying natural section breaks
+    
+    Uses retry logic with exponential backoff to handle YouTube 429 errors.
     """
     video_id = extract_video_id(url)
     if not video_id:
@@ -164,105 +192,116 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
     
     print(f"  → Extracting timestamped transcript for: {video_id}")
     
-    try:
+    # Get title early (less likely to be rate limited)
+    title = get_video_title(video_id)
+    
+    # Wrap entire extraction in retry logic
+    def try_extract_transcript():
         from youtube_transcript_api import YouTubeTranscriptApi
         
+        # Single consolidated approach - get list of transcripts once
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         transcript_data = None
         
-        # Try to get transcript with timestamps
-        try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            
-            # Strategy 1: Preferred languages
-            for lang in PREFERRED_LANGUAGES:
+        # Strategy 1: Preferred languages (English, etc.)
+        for lang in PREFERRED_LANGUAGES:
+            try:
+                transcript = transcript_list.find_transcript([lang])
+                transcript_data = transcript.fetch()
+                print(f"  → Found transcript in: {lang}")
+                return transcript_data
+            except Exception:
+                continue
+        
+        # Strategy 2: Any available transcript
+        for transcript in transcript_list:
+            try:
+                transcript_data = transcript.fetch()
+                print(f"  → Using {transcript.language} transcript")
+                return transcript_data
+            except Exception:
+                continue
+        
+        # Strategy 3: Translation to English
+        for transcript in transcript_list:
+            if transcript.is_translatable:
                 try:
-                    transcript = transcript_list.find_transcript([lang])
-                    transcript_data = transcript.fetch()
-                    print(f"  → Found timestamped transcript in: {lang}")
-                    break
-                except Exception:
-                    continue
-            
-            # Strategy 2: Any available transcript
-            if not transcript_data:
-                for transcript in transcript_list:
-                    try:
-                        transcript_data = transcript.fetch()
-                        print(f"  → Using {transcript.language} timestamped transcript")
-                        break
-                    except Exception:
-                        continue
-            
-            # Strategy 3: Translation
-            if not transcript_data:
-                for transcript in transcript_list:
-                    if transcript.is_translatable:
-                        try:
-                            translated = transcript.translate('en')
-                            transcript_data = translated.fetch()
-                            print(f"  → Translated to English with timestamps")
-                            break
-                        except Exception:
-                            continue
-                            
-        except Exception as e:
-            print(f"  → list_transcripts failed: {e}")
-            # Fallback to direct fetch
-            for lang in PREFERRED_LANGUAGES:
-                try:
-                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                    print(f"  → Got timestamped transcript in {lang}")
-                    break
+                    translated = transcript.translate('en')
+                    transcript_data = translated.fetch()
+                    print(f"  → Translated to English")
+                    return transcript_data
                 except Exception:
                     continue
         
-        if transcript_data:
-            # Convert to TranscriptSegment objects
-            segments = []
-            for entry in transcript_data:
-                start = entry.get('start', 0)
-                duration = entry.get('duration', 0)
-                text = entry.get('text', '').strip()
-                if text:  # Skip empty segments
-                    segments.append(TranscriptSegment(
-                        text=text,
-                        start_time=start,
-                        end_time=start + duration
-                    ))
-            
-            # Also create flat text for backward compatibility
-            flat_text = ' '.join([s.text for s in segments])
-            flat_text = re.sub(r'\s+', ' ', flat_text).strip()
-            
-            title = get_video_title(video_id)
-            print(f"  → Got {len(segments)} timestamped segments ({len(flat_text)} chars)")
-            
-            return segments, flat_text, title
-            
+        return None
+    
+    # Try with retry logic for 429 errors
+    transcript_data = None
+    try:
+        transcript_data = _retry_on_429(try_extract_transcript, max_retries=3, base_delay=3.0)
     except ImportError:
         print("  → youtube-transcript-api not available")
     except Exception as e:
-        print(f"  → Timestamped extraction failed: {e}")
+        error_str = str(e).lower()
+        if '429' in error_str or 'too many' in error_str:
+            # Wait extra time before falling back
+            print(f"  → YouTube rate limited after retries, waiting 10s before fallback...")
+            time.sleep(10)
+        print(f"  → Transcript extraction failed: {type(e).__name__}")
     
-    # Fallback: Get regular transcript and create segments without precise timestamps
-    print("  → Falling back to basic transcript (no timestamps)")
-    flat_text, title = get_transcript(url)
+    # If we got transcript data, convert to segments
+    if transcript_data:
+        segments = []
+        for entry in transcript_data:
+            start = entry.get('start', 0)
+            duration = entry.get('duration', 0)
+            text = entry.get('text', '').strip()
+            if text:  # Skip empty segments
+                segments.append(TranscriptSegment(
+                    text=text,
+                    start_time=start,
+                    end_time=start + duration
+                ))
+        
+        flat_text = ' '.join([s.text for s in segments])
+        flat_text = re.sub(r'\s+', ' ', flat_text).strip()
+        
+        print(f"  → Got {len(segments)} timestamped segments ({len(flat_text)} chars)")
+        return segments, flat_text, title
     
-    # Create pseudo-segments (one per ~30 seconds of content assuming 150 wpm)
-    words = flat_text.split()
-    words_per_segment = 75  # ~30 seconds at 150 wpm
-    segments = []
-    
-    for i in range(0, len(words), words_per_segment):
-        chunk_words = words[i:i + words_per_segment]
-        estimated_start = (i / 150) * 60  # Estimate based on word position
-        segments.append(TranscriptSegment(
-            text=' '.join(chunk_words),
-            start_time=estimated_start,
-            end_time=estimated_start + 30
-        ))
-    
-    return segments, flat_text, title
+    # Fallback: Try yt-dlp with retry (wraps single call, no cascade)
+    print("  → Falling back to yt-dlp...")
+    try:
+        def try_ytdlp():
+            return _get_transcript_ytdlp(url)
+        
+        flat_text, ytdlp_title = _retry_on_429(try_ytdlp, max_retries=2, base_delay=5.0)
+        title = ytdlp_title or title
+        
+        # Create pseudo-segments
+        words = flat_text.split()
+        words_per_segment = 75  # ~30 seconds at 150 wpm
+        segments = []
+        
+        for i in range(0, len(words), words_per_segment):
+            chunk_words = words[i:i + words_per_segment]
+            estimated_start = (i / 150) * 60
+            segments.append(TranscriptSegment(
+                text=' '.join(chunk_words),
+                start_time=estimated_start,
+                end_time=estimated_start + 30
+            ))
+        
+        return segments, flat_text, title
+        
+    except Exception as e:
+        error_str = str(e).lower()
+        if '429' in error_str or 'too many' in error_str:
+            raise Exception("YouTube is temporarily limiting requests. Please try again in a few minutes.")
+        elif '403' in error_str or 'forbidden' in error_str:
+            raise Exception("Unable to access this video's transcript. It may be private or have captions disabled.")
+        else:
+            raise
 
 
 def _get_transcript_ytdlp(url: str) -> Tuple[str, str]:
