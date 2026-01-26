@@ -60,8 +60,8 @@ def create_notion_page(notion_token: str, database_id: str, title: str, url: str
         parent={"database_id": database_id},
         properties={
             "Title": {"title": [{"text": {"content": title}}]},
-            "url": {"url": url},
-            "Added": {"date": {"start": date.today().isoformat()}}
+            "URL": {"url": url},
+            "Date Added": {"date": {"start": date.today().isoformat()}}
         },
         children=children
     )
@@ -367,8 +367,8 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
         parent={"database_id": database_id},
         properties={
             "Title": {"title": [{"text": {"content": notes.title}}]},
-            "url": {"url": video_url},
-            "Added": {"date": {"start": date.today().isoformat()}}
+            "URL": {"url": video_url},
+            "Date Added": {"date": {"start": date.today().isoformat()}}
         },
         children=children
     )
