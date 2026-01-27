@@ -186,6 +186,13 @@ class ShareViewController: UIViewController {
                 var urlString = String(html[range])
                 // Unescape unicode
                 urlString = urlString.replacingOccurrences(of: "\\u0026", with: "&")
+                urlString = urlString.replacingOccurrences(of: "\\/", with: "/")
+                
+                // Handle relative URLs - prepend YouTube base URL if needed
+                if urlString.hasPrefix("/") {
+                    urlString = "https://www.youtube.com" + urlString
+                }
+                
                 if let url = URL(string: urlString) {
                     return url
                 }
@@ -194,6 +201,7 @@ class ShareViewController: UIViewController {
         
         return nil
     }
+
     
     /// Parse transcript from YouTube's XML format
     private func parseTranscriptXML(_ data: Data) -> String? {
