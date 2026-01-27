@@ -98,7 +98,9 @@ class ShareViewController: UIViewController {
         
         Task {
             do {
-                let result = try await callSummarizeAPI(url: url, token: token)
+                // Fetch transcript client-side (bypasses YouTube IP blocking)
+                let transcript = await fetchTranscript(for: url)
+                let result = try await callSummarizeAPI(url: url, token: token, transcript: transcript)
                 
                 await MainActor.run {
                     if result.success {
@@ -115,7 +117,114 @@ class ShareViewController: UIViewController {
         }
     }
     
-    private func callSummarizeAPI(url: String, token: String) async throws -> SummarizeResult {
+    /// Fetch transcript from YouTube (client-side to bypass IP blocking)
+    private func fetchTranscript(for url: String) async -> String? {
+        // Extract video ID
+        let patterns = [
+            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"#,
+            #"(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})"#
+        ]
+        
+        var videoId: String?
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)),
+               let range = Range(match.range(at: 1), in: url) {
+                videoId = String(url[range])
+                break
+            }
+        }
+        
+        guard let id = videoId else {
+            print("Could not extract video ID")
+            return nil
+        }
+        
+        // Try to get transcript using YouTube's innertube API
+        do {
+            // First, get the video page to find available captions
+            let videoPageURL = URL(string: "https://www.youtube.com/watch?v=\(id)")!
+            var pageRequest = URLRequest(url: videoPageURL)
+            pageRequest.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            pageRequest.timeoutInterval = 15
+            
+            let (pageData, _) = try await URLSession.shared.data(for: pageRequest)
+            guard let pageHTML = String(data: pageData, encoding: .utf8) else {
+                print("Could not decode YouTube page")
+                return nil
+            }
+            
+            // Extract captions URL from ytInitialPlayerResponse
+            if let captionsURL = extractCaptionsURL(from: pageHTML, videoId: id) {
+                let (captionData, _) = try await URLSession.shared.data(from: captionsURL)
+                if let transcript = parseTranscriptXML(captionData) {
+                    print("Successfully fetched transcript (\(transcript.count) chars)")
+                    return transcript
+                }
+            }
+            
+            print("No captions found for video")
+            return nil
+        } catch {
+            print("Transcript fetch error: \(error.localizedDescription)")
+            return nil
+        }
+    }
+    
+    /// Extract captions URL from YouTube page HTML
+    private func extractCaptionsURL(from html: String, videoId: String) -> URL? {
+        // Look for timedtext URL in the page
+        let patterns = [
+            #""baseUrl"\s*:\s*"(https://www\.youtube\.com/api/timedtext[^"]+)""#,
+            #""captionTracks".*?"baseUrl"\s*:\s*"([^"]+)""#
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators),
+               let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let range = Range(match.range(at: 1), in: html) {
+                var urlString = String(html[range])
+                // Unescape unicode
+                urlString = urlString.replacingOccurrences(of: "\\u0026", with: "&")
+                if let url = URL(string: urlString) {
+                    return url
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    /// Parse transcript from YouTube's XML format
+    private func parseTranscriptXML(_ data: Data) -> String? {
+        guard let xmlString = String(data: data, encoding: .utf8) else { return nil }
+        
+        // Simple XML parsing - extract text between <text> tags
+        var transcript = ""
+        let pattern = #"<text[^>]*>([^<]*)</text>"#
+        
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let matches = regex.matches(in: xmlString, range: NSRange(xmlString.startIndex..., in: xmlString))
+            
+            for match in matches {
+                if let range = Range(match.range(at: 1), in: xmlString) {
+                    var text = String(xmlString[range])
+                    // Decode HTML entities
+                    text = text.replacingOccurrences(of: "&amp;", with: "&")
+                    text = text.replacingOccurrences(of: "&lt;", with: "<")
+                    text = text.replacingOccurrences(of: "&gt;", with: ">")
+                    text = text.replacingOccurrences(of: "&quot;", with: "\"")
+                    text = text.replacingOccurrences(of: "&#39;", with: "'")
+                    text = text.replacingOccurrences(of: "\n", with: " ")
+                    transcript += text + " "
+                }
+            }
+        }
+        
+        return transcript.isEmpty ? nil : transcript.trimmingCharacters(in: .whitespaces)
+    }
+    
+    private func callSummarizeAPI(url: String, token: String, transcript: String?) async throws -> SummarizeResult {
         let endpoint = URL(string: "https://watchlater.up.railway.app/summarize")!
         
         var request = URLRequest(url: endpoint)
@@ -124,8 +233,12 @@ class ShareViewController: UIViewController {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 120
         
-        let body = ["url": url]
-        request.httpBody = try JSONEncoder().encode(body)
+        // Include transcript if available (bypasses server-side YouTube fetch)
+        var bodyDict: [String: String] = ["url": url]
+        if let transcript = transcript {
+            bodyDict["transcript"] = transcript
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
         
         let (data, response) = try await URLSession.shared.data(for: request)
         

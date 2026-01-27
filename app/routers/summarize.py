@@ -75,9 +75,19 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
         # Process video
         print(f"Processing for user {user['id']}: {body.url}")
         
-        print("  → Fetching timestamped transcript...")
-        segments, transcript, video_title = get_transcript_with_timestamps(body.url)
-        print(f"  → Got {len(segments)} segments ({len(transcript)} chars)")
+        # Use client-provided transcript if available (bypasses YouTube IP blocking)
+        if body.transcript:
+            print("  → Using client-provided transcript...")
+            # Parse plain text transcript into segments (no timestamps from client)
+            from ..models import TranscriptSegment
+            segments = [TranscriptSegment(text=body.transcript, start_time=0, end_time=0)]
+            transcript = body.transcript
+            video_title = None  # Will be detected from transcript
+            print(f"  → Got client transcript ({len(transcript)} chars)")
+        else:
+            print("  → Fetching timestamped transcript (server-side)...")
+            segments, transcript, video_title = get_transcript_with_timestamps(body.url)
+            print(f"  → Got {len(segments)} segments ({len(transcript)} chars)")
         
         print("  → Generating lecture notes (auto-detects long videos)...")
         notes = process_long_transcript(segments, video_title, video_id)

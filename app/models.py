@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 class SummarizeRequest(BaseModel):
     url: str
+    transcript: Optional[str] = None  # Client-provided transcript (bypasses server fetch)
 
 
 class SummarizeResponse(BaseModel):
