@@ -148,11 +148,12 @@ class HomeViewModel: ObservableObject {
     
     /// Fetch transcript from YouTube (client-side to bypass IP blocking)
     private func fetchTranscript(for url: String) async -> String? {
-        // Extract video ID
+        // Extract video ID - support various YouTube URL formats
         let patterns = [
-            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"#,
+            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})"#,
             #"(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})"#
         ]
+
         
         var videoId: String?
         for pattern in patterns {
