@@ -6,6 +6,29 @@ struct HomeView: View {
     @State private var urlInput = ""
     @State private var showingSettings = false
     
+    /// Extract video ID from YouTube URL
+    private var videoId: String? {
+        let patterns = [
+            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"#,
+            #"(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})"#
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: urlInput, range: NSRange(urlInput.startIndex..., in: urlInput)),
+               let range = Range(match.range(at: 1), in: urlInput) {
+                return String(urlInput[range])
+            }
+        }
+        return nil
+    }
+    
+    /// YouTube thumbnail URL
+    private var thumbnailURL: URL? {
+        guard let videoId = videoId else { return nil }
+        return URL(string: "https://img.youtube.com/vi/\(videoId)/mqdefault.jpg")
+    }
+    
     var body: some View {
         NavigationStack {
             ZStack {
@@ -32,29 +55,95 @@ struct HomeView: View {
                         .background(.white)
                         .cornerRadius(12)
                         
+                        // Video Preview with Thumbnail (when URL is valid)
+                        if let thumbnailURL = thumbnailURL {
+                            HStack(spacing: 12) {
+                                AsyncImage(url: thumbnailURL) { phase in
+                                    switch phase {
+                                    case .success(let image):
+                                        image
+                                            .resizable()
+                                            .aspectRatio(16/9, contentMode: .fill)
+                                            .frame(width: 100, height: 56)
+                                            .cornerRadius(8)
+                                    case .failure(_):
+                                        thumbnailPlaceholder
+                                    case .empty:
+                                        thumbnailPlaceholder
+                                            .overlay(ProgressView().tint(.gray))
+                                    @unknown default:
+                                        thumbnailPlaceholder
+                                    }
+                                }
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("YouTube Video")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                    
+                                    Text(urlInput)
+                                        .lineLimit(1)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                
+                                Spacer()
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                        
+                        // Summarize Button with Progress UI
                         Button(action: summarize) {
-                            HStack {
-                                if viewModel.isProcessing {
-                                    ProgressView()
-                                        .tint(.white)
-                                } else {
+                            if viewModel.isProcessing {
+                                // Enhanced progress UI with stages
+                                VStack(spacing: 10) {
+                                    // Stage indicator with icon
+                                    HStack(spacing: 8) {
+                                        Image(systemName: viewModel.currentStage.icon)
+                                            .font(.subheadline)
+                                        Text(viewModel.currentStage.displayText)
+                                            .font(.subheadline)
+                                    }
+                                    .foregroundStyle(.white)
+                                    
+                                    // Progress bar
+                                    GeometryReader { geometry in
+                                        ZStack(alignment: .leading) {
+                                            // Background track
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(Color.white.opacity(0.3))
+                                                .frame(height: 6)
+                                            
+                                            // Progress fill
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(Color.white)
+                                                .frame(width: geometry.size.width * viewModel.overallProgress, height: 6)
+                                                .animation(.linear(duration: 0.1), value: viewModel.overallProgress)
+                                        }
+                                    }
+                                    .frame(height: 6)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                            } else {
+                                HStack {
                                     Image(systemName: "sparkles")
                                     Text("Summarize & Save")
                                 }
+                                .frame(maxWidth: .infinity)
+                                .padding()
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(
-                                LinearGradient(
-                                    colors: [.red, .orange],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .foregroundStyle(.white)
-                            .fontWeight(.semibold)
-                            .cornerRadius(12)
                         }
+                        .background(
+                            LinearGradient(
+                                colors: [.red, .orange],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .foregroundStyle(.white)
+                        .fontWeight(.semibold)
+                        .cornerRadius(12)
                         .disabled(urlInput.isEmpty || viewModel.isProcessing || !viewModel.isNotionConnected)
                     }
                     .padding()
@@ -126,6 +215,18 @@ struct HomeView: View {
         }
     }
     
+    private var thumbnailPlaceholder: some View {
+        Rectangle()
+            .fill(Color(.systemGray5))
+            .frame(width: 100, height: 56)
+            .cornerRadius(8)
+            .overlay(
+                Image(systemName: "play.rectangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
+            )
+    }
+    
     private func loadProfile() {
         Task {
             if let token = authManager.accessToken {
@@ -141,6 +242,10 @@ struct HomeView: View {
     }
     
     private func summarize() {
+        // Haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
         Task {
             await viewModel.summarize(url: urlInput, token: authManager.accessToken ?? "")
             if viewModel.isSuccess {

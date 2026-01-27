@@ -26,7 +26,7 @@ class APIService {
     
     // MARK: - Summarize
     
-    func summarize(url: String, authToken: String) async throws -> SummaryResponse {
+    func summarize(url: String, transcript: String? = nil, authToken: String) async throws -> SummaryResponse {
         let endpoint = URL(string: "\(APIConfig.baseURL)/summarize")!
         
         var request = URLRequest(url: endpoint)
@@ -34,7 +34,13 @@ class APIService {
         request.timeoutInterval = APIConfig.summarizeTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(["url": url])
+        
+        // Include transcript if available (bypasses server-side YouTube fetch)
+        var bodyDict: [String: String] = ["url": url]
+        if let transcript = transcript {
+            bodyDict["transcript"] = transcript
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -62,6 +68,7 @@ class APIService {
         
         return try JSONDecoder().decode(SummaryResponse.self, from: data)
     }
+
     
     // MARK: - Get User Profile
     
