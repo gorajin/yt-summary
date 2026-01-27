@@ -300,6 +300,9 @@ class ShareViewController: UIViewController {
     }
     
     private func showSuccess(title: String) {
+        // Stop progress timer
+        NotificationCenter.default.post(name: NSNotification.Name("StopProgressTimer"), object: nil)
+        
         let alert = UIAlertController(title: "✅ Saved!", message: title, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Done", style: .default) { [weak self] _ in
             self?.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
@@ -308,6 +311,9 @@ class ShareViewController: UIViewController {
     }
     
     private func showError(_ message: String) {
+        // Stop progress timer
+        NotificationCenter.default.post(name: NSNotification.Name("StopProgressTimer"), object: nil)
+        
         let alert = UIAlertController(title: "Error", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .cancel) { [weak self] _ in
             self?.extensionContext?.cancelRequest(withError: NSError(domain: "WatchLater", code: 1))
@@ -317,6 +323,43 @@ class ShareViewController: UIViewController {
 }
 
 
+// MARK: - Progress Stage Model
+
+enum SummarizationStage: CaseIterable {
+    case fetchingTranscript   // "Fetching transcript..."
+    case analyzingContent     // "Analyzing content..."
+    case generatingSummary    // "Generating summary..."
+    case savingToNotion       // "Saving to Notion..."
+    
+    var displayText: String {
+        switch self {
+        case .fetchingTranscript: return "Fetching transcript..."
+        case .analyzingContent: return "Analyzing content..."
+        case .generatingSummary: return "Generating summary..."
+        case .savingToNotion: return "Saving to Notion..."
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .fetchingTranscript: return "text.bubble"
+        case .analyzingContent: return "doc.text.magnifyingglass"
+        case .generatingSummary: return "sparkles"
+        case .savingToNotion: return "square.and.arrow.up"
+        }
+    }
+    
+    // Estimated duration in seconds for progress bar animation
+    var estimatedDuration: Double {
+        switch self {
+        case .fetchingTranscript: return 3.0
+        case .analyzingContent: return 5.0
+        case .generatingSummary: return 25.0  // Longest step (Gemini processing)
+        case .savingToNotion: return 4.0
+        }
+    }
+}
+
 // MARK: - SwiftUI Share View
 
 struct ShareExtensionView: View {
@@ -325,6 +368,21 @@ struct ShareExtensionView: View {
     let onCancel: () -> Void
     
     @State private var isLoading = false
+    @State private var currentStage: SummarizationStage = .fetchingTranscript
+    @State private var stageProgress: Double = 0.0  // 0.0 - 1.0 within current stage
+    @State private var progressTimer: Timer? = nil
+    
+    /// Computed property for overall progress (0.0 - 1.0)
+    private var overallProgress: Double {
+        let stages = SummarizationStage.allCases
+        guard let currentIndex = stages.firstIndex(of: currentStage) else { return 0 }
+        
+        let completedStages = Double(currentIndex)
+        let totalStages = Double(stages.count)
+        
+        // Each stage contributes equally + current stage's partial progress
+        return (completedStages + stageProgress) / totalStages
+    }
     
     /// Extract video ID from YouTube URL
     private var videoId: String? {
@@ -425,30 +483,59 @@ struct ShareExtensionView: View {
                     impactFeedback.impactOccurred()
                     
                     isLoading = true
+                    startProgressSimulation()
                     onSave()
                 }) {
-                    HStack {
-                        if isLoading {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
+                    if isLoading {
+                        // Enhanced progress UI
+                        VStack(spacing: 10) {
+                            // Stage indicator with icon
+                            HStack(spacing: 8) {
+                                Image(systemName: currentStage.icon)
+                                    .font(.subheadline)
+                                Text(currentStage.displayText)
+                                    .font(.subheadline)
+                            }
+                            .foregroundStyle(.white)
+                            
+                            // Progress bar
+                            GeometryReader { geometry in
+                                ZStack(alignment: .leading) {
+                                    // Background track
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.white.opacity(0.3))
+                                        .frame(height: 6)
+                                    
+                                    // Progress fill
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.white)
+                                        .frame(width: geometry.size.width * overallProgress, height: 6)
+                                        .animation(.linear(duration: 0.1), value: overallProgress)
+                                }
+                            }
+                            .frame(height: 6)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                    } else {
+                        HStack {
                             Image(systemName: "sparkles")
                             Text("Summarize & Save")
                         }
+                        .frame(maxWidth: .infinity)
+                        .padding()
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(
-                        LinearGradient(
-                            colors: [.red, .orange],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .foregroundStyle(.white)
-                    .fontWeight(.semibold)
-                    .cornerRadius(12)
                 }
+                .background(
+                    LinearGradient(
+                        colors: [.red, .orange],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .foregroundStyle(.white)
+                .fontWeight(.semibold)
+                .cornerRadius(12)
                 .disabled(isLoading)
                 .padding(.horizontal)
                 .padding(.bottom, 20)
@@ -458,6 +545,10 @@ struct ShareExtensionView: View {
             .cornerRadius(20, corners: [.topLeft, .topRight])
         }
         .background(Color.black.opacity(0.3))
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StopProgressTimer"))) { _ in
+            progressTimer?.invalidate()
+            progressTimer = nil
+        }
     }
     
     private var thumbnailPlaceholder: some View {
@@ -470,6 +561,54 @@ struct ShareExtensionView: View {
                     .font(.title2)
                     .foregroundStyle(.red)
             )
+    }
+    
+    // MARK: - Progress Simulation
+    
+    private func startProgressSimulation() {
+        currentStage = .fetchingTranscript
+        stageProgress = 0.0
+        advanceProgressWithinStage()
+    }
+    
+    private func advanceProgressWithinStage() {
+        let stage = currentStage
+        let duration = stage.estimatedDuration
+        let updateInterval = 0.1  // Update every 100ms
+        let progressIncrement = updateInterval / duration
+        
+        progressTimer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { timer in
+            stageProgress += progressIncrement
+            
+            // Move to next stage when current completes
+            if stageProgress >= 1.0 {
+                timer.invalidate()
+                moveToNextStage()
+            }
+        }
+    }
+    
+    private func moveToNextStage() {
+        let stages = SummarizationStage.allCases
+        guard let currentIndex = stages.firstIndex(of: currentStage),
+              currentIndex + 1 < stages.count else {
+            // On last stage, slow down progress (wait for actual completion)
+            stallOnLastStage()
+            return
+        }
+        
+        stageProgress = 0.0
+        currentStage = stages[currentIndex + 1]
+        advanceProgressWithinStage()
+    }
+    
+    private func stallOnLastStage() {
+        // Slow progress on last stage - API will complete and dismiss
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+            if stageProgress < 0.95 {
+                stageProgress += 0.02  // Very slow progress
+            }
+        }
     }
 }
 
