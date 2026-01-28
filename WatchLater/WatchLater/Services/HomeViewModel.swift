@@ -204,12 +204,29 @@ class HomeViewModel: ObservableObject {
                 )
                 captionRequest.timeoutInterval = 15
                 
-                let (captionData, _) = try await URLSession.shared.data(for: captionRequest)
+                let (captionData, captionResponse) = try await URLSession.shared.data(for: captionRequest)
+                
+                // Log response details for debugging
+                if let httpResponse = captionResponse as? HTTPURLResponse {
+                    print("📝 Caption response status: \(httpResponse.statusCode)")
+                }
+                print("📝 Caption data size: \(captionData.count) bytes")
+                
+                // Try parsing as XML first, then JSON3 format
                 if let transcript = parseTranscriptXML(captionData) {
                     print("✅ Successfully fetched transcript (\(transcript.count) chars)")
                     return transcript
+                } else if let transcript = parseTranscriptJSON3(captionData) {
+                    print("✅ Successfully fetched transcript from JSON3 (\(transcript.count) chars)")
+                    return transcript
+                } else {
+                    // Log first 500 chars of response for debugging
+                    if let responseStr = String(data: captionData, encoding: .utf8) {
+                        print("❌ Failed to parse caption data. First 500 chars: \(String(responseStr.prefix(500)))")
+                    }
                 }
             } else {
+
                 print("❌ No captions URL found in HTML")
                 // Log a snippet for debugging
                 if pageHTML.contains("captionTracks") {
@@ -290,7 +307,30 @@ class HomeViewModel: ObservableObject {
         return transcript.isEmpty ? nil : transcript.trimmingCharacters(in: .whitespaces)
     }
     
+    /// Parse transcript from YouTube's JSON3 format (alternative to XML)
+    private func parseTranscriptJSON3(_ data: Data) -> String? {
+        // JSON3 format: {"events":[{"segs":[{"utf8":"text"}]},...]}
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let events = json["events"] as? [[String: Any]] else {
+            return nil
+        }
+        
+        var transcript = ""
+        for event in events {
+            if let segs = event["segs"] as? [[String: Any]] {
+                for seg in segs {
+                    if let text = seg["utf8"] as? String {
+                        transcript += text
+                    }
+                }
+            }
+        }
+        
+        return transcript.isEmpty ? nil : transcript.trimmingCharacters(in: .whitespaces)
+    }
+    
     // MARK: - Progress Simulation
+
     
     private func startProgressSimulation() {
         currentStage = .fetchingTranscript
