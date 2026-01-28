@@ -310,32 +310,59 @@ class HomeViewModel: ObservableObject {
     private func extractAllCaptionTracks(from html: String) -> [(lang: String, baseUrl: String)] {
         var tracks: [(lang: String, baseUrl: String)] = []
         
-        // Look for captionTracks array in ytInitialPlayerResponse
-        // Pattern: "captionTracks":[{"baseUrl":"...","name":{"simpleText":"..."},"languageCode":"..."}]
-        let pattern = #""captionTracks"\s*:\s*\[(.*?)\]"#
-        
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators),
-              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-              let range = Range(match.range(at: 1), in: html) else {
-            print("📝 Could not find captionTracks array in HTML")
+        // First, find the captionTracks section - use a more robust approach
+        // Look for "captionTracks":[ and then find the matching ]
+        guard let startIndex = html.range(of: "\"captionTracks\":[")?.upperBound else {
+            print("📝 Could not find captionTracks in HTML")
             return []
         }
         
-        let captionTracksJSON = String(html[range])
+        // Find the matching closing bracket by counting brackets
+        var bracketCount = 1
+        var endIndex = startIndex
+        var searchIndex = startIndex
         
-        // Extract individual tracks
-        let trackPattern = #"\{"baseUrl"\s*:\s*"([^"]+)"[^}]*"languageCode"\s*:\s*"([^"]+)""#
-        let altTrackPattern = #""languageCode"\s*:\s*"([^"]+)"[^}]*"baseUrl"\s*:\s*"([^"]+)""#
+        while bracketCount > 0 && searchIndex < html.endIndex {
+            let char = html[searchIndex]
+            if char == "[" { bracketCount += 1 }
+            else if char == "]" { bracketCount -= 1 }
+            if bracketCount > 0 { searchIndex = html.index(after: searchIndex) }
+            endIndex = searchIndex
+        }
         
-        // Try first pattern
-        if let trackRegex = try? NSRegularExpression(pattern: trackPattern, options: .dotMatchesLineSeparators) {
-            let matches = trackRegex.matches(in: captionTracksJSON, range: NSRange(captionTracksJSON.startIndex..., in: captionTracksJSON))
-            
-            for match in matches {
-                if let urlRange = Range(match.range(at: 1), in: captionTracksJSON),
-                   let langRange = Range(match.range(at: 2), in: captionTracksJSON) {
-                    var urlString = String(captionTracksJSON[urlRange])
-                    let lang = String(captionTracksJSON[langRange])
+        let captionTracksJSON = String(html[startIndex..<endIndex])
+        print("📝 Extracted captionTracks JSON (\(captionTracksJSON.count) chars)")
+        
+        // Now extract individual caption tracks using patterns that handle nested objects
+        // Look for baseUrl and languageCode pairs - use .*? which allows any chars including }
+        let patterns = [
+            // Pattern 1: baseUrl comes before languageCode
+            #""baseUrl"\s*:\s*"([^"]+)".*?"languageCode"\s*:\s*"([^"]+)""#,
+            // Pattern 2: languageCode comes before baseUrl  
+            #""languageCode"\s*:\s*"([^"]+)".*?"baseUrl"\s*:\s*"([^"]+)""#
+        ]
+        
+        for (patternIndex, pattern) in patterns.enumerated() {
+            if let trackRegex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators) {
+                let matches = trackRegex.matches(in: captionTracksJSON, range: NSRange(captionTracksJSON.startIndex..., in: captionTracksJSON))
+                
+                for match in matches {
+                    var urlString: String
+                    var lang: String
+                    
+                    if patternIndex == 0 {
+                        // baseUrl is group 1, languageCode is group 2
+                        guard let urlRange = Range(match.range(at: 1), in: captionTracksJSON),
+                              let langRange = Range(match.range(at: 2), in: captionTracksJSON) else { continue }
+                        urlString = String(captionTracksJSON[urlRange])
+                        lang = String(captionTracksJSON[langRange])
+                    } else {
+                        // languageCode is group 1, baseUrl is group 2
+                        guard let langRange = Range(match.range(at: 1), in: captionTracksJSON),
+                              let urlRange = Range(match.range(at: 2), in: captionTracksJSON) else { continue }
+                        urlString = String(captionTracksJSON[urlRange])
+                        lang = String(captionTracksJSON[langRange])
+                    }
                     
                     // Unescape
                     urlString = urlString.replacingOccurrences(of: "\\u0026", with: "&")
@@ -346,32 +373,14 @@ class HomeViewModel: ObservableObject {
                         urlString = "https://www.youtube.com" + urlString
                     }
                     
-                    tracks.append((lang: lang, baseUrl: urlString))
-                }
-            }
-        }
-        
-        // If no matches, try alternate pattern
-        if tracks.isEmpty {
-            if let trackRegex = try? NSRegularExpression(pattern: altTrackPattern, options: .dotMatchesLineSeparators) {
-                let matches = trackRegex.matches(in: captionTracksJSON, range: NSRange(captionTracksJSON.startIndex..., in: captionTracksJSON))
-                
-                for match in matches {
-                    if let langRange = Range(match.range(at: 1), in: captionTracksJSON),
-                       let urlRange = Range(match.range(at: 2), in: captionTracksJSON) {
-                        var urlString = String(captionTracksJSON[urlRange])
-                        let lang = String(captionTracksJSON[langRange])
-                        
-                        urlString = urlString.replacingOccurrences(of: "\\u0026", with: "&")
-                        urlString = urlString.replacingOccurrences(of: "\\/", with: "/")
-                        
-                        if urlString.hasPrefix("/") {
-                            urlString = "https://www.youtube.com" + urlString
-                        }
-                        
+                    // Avoid duplicates
+                    if !tracks.contains(where: { $0.lang == lang }) {
                         tracks.append((lang: lang, baseUrl: urlString))
                     }
                 }
+                
+                // If we found tracks, stop trying patterns
+                if !tracks.isEmpty { break }
             }
         }
         
