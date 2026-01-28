@@ -147,6 +147,7 @@ class HomeViewModel: ObservableObject {
     // MARK: - Client-Side Transcript Fetching
     
     /// Fetch transcript from YouTube (client-side to bypass IP blocking)
+    /// Enhanced to try ALL available caption tracks, not just the first one
     private func fetchTranscript(for url: String) async -> String? {
         // Extract video ID - support various YouTube URL formats
         let patterns = [
@@ -182,7 +183,8 @@ class HomeViewModel: ObservableObject {
                 "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                 forHTTPHeaderField: "User-Agent"
             )
-            pageRequest.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+            pageRequest.setValue("en-US,en;q=0.9,ko;q=0.8", forHTTPHeaderField: "Accept-Language")
+            pageRequest.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
             pageRequest.timeoutInterval = 20
             
             let (pageData, _) = try await URLSession.shared.data(for: pageRequest)
@@ -193,58 +195,194 @@ class HomeViewModel: ObservableObject {
             
             print("📝 Fetched YouTube page (\(pageHTML.count) bytes)")
             
-            // Extract captions URL from ytInitialPlayerResponse
-            if let captionsURL = extractCaptionsURL(from: pageHTML, videoId: id) {
-                print("📝 Found captions URL: \(captionsURL)")
-                
-                var captionRequest = URLRequest(url: captionsURL)
-                captionRequest.setValue(
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-                    forHTTPHeaderField: "User-Agent"
-                )
-                captionRequest.timeoutInterval = 15
-                
-                let (captionData, captionResponse) = try await URLSession.shared.data(for: captionRequest)
-                
-                // Log response details for debugging
-                if let httpResponse = captionResponse as? HTTPURLResponse {
-                    print("📝 Caption response status: \(httpResponse.statusCode)")
-                }
-                print("📝 Caption data size: \(captionData.count) bytes")
-                
-                // Try parsing as XML first, then JSON3 format
-                if let transcript = parseTranscriptXML(captionData) {
-                    print("✅ Successfully fetched transcript (\(transcript.count) chars)")
-                    return transcript
-                } else if let transcript = parseTranscriptJSON3(captionData) {
-                    print("✅ Successfully fetched transcript from JSON3 (\(transcript.count) chars)")
-                    return transcript
-                } else {
-                    // Log first 500 chars of response for debugging
-                    if let responseStr = String(data: captionData, encoding: .utf8) {
-                        print("❌ Failed to parse caption data. First 500 chars: \(String(responseStr.prefix(500)))")
-                    }
-                }
-            } else {
-
-                print("❌ No captions URL found in HTML")
-                // Log a snippet for debugging
+            // Extract ALL caption tracks, not just the first one
+            let captionTracks = extractAllCaptionTracks(from: pageHTML)
+            print("📝 Found \(captionTracks.count) caption tracks")
+            
+            if captionTracks.isEmpty {
+                print("❌ No caption tracks found in page")
+                // Debug: Check if keywords exist
                 if pageHTML.contains("captionTracks") {
-                    print("📝 HTML contains 'captionTracks' but regex didn't match")
+                    print("📝 HTML contains 'captionTracks' but extraction failed")
                 }
-                if pageHTML.contains("timedtext") {
-                    print("📝 HTML contains 'timedtext' but regex didn't match")
+                return nil
+            }
+            
+            // Sort tracks: prefer English, then auto-generated English, then Korean, then any
+            let sortedTracks = captionTracks.sorted { a, b in
+                let priority: (String) -> Int = { lang in
+                    if lang.lowercased().hasPrefix("en") && !lang.contains("auto") { return 0 }
+                    if lang.lowercased().hasPrefix("en") { return 1 }
+                    if lang.lowercased().hasPrefix("ko") && !lang.contains("auto") { return 2 }
+                    if lang.lowercased().hasPrefix("ko") { return 3 }
+                    return 4
+                }
+                return priority(a.lang) < priority(b.lang)
+            }
+            
+            for track in sortedTracks {
+                print("📝 Trying caption track: \(track.lang)")
+                
+                // Try with different formats
+                let formats = ["json3", "srv1", "srv3"]
+                
+                for format in formats {
+                    var urlString = track.baseUrl
+                    
+                    // Handle format parameter
+                    if urlString.contains("fmt=") {
+                        // Replace existing format
+                        urlString = urlString.replacingOccurrences(of: #"fmt=\w+"#, with: "fmt=\(format)", options: .regularExpression)
+                    } else {
+                        urlString += "&fmt=\(format)"
+                    }
+                    
+                    guard let captionURL = URL(string: urlString) else { continue }
+                    
+                    // Try to fetch this caption track
+                    if let transcript = await fetchCaptionData(from: captionURL, format: format) {
+                        print("✅ Successfully got transcript from \(track.lang) with format \(format) (\(transcript.count) chars)")
+                        return transcript
+                    }
                 }
             }
             
-            print("❌ No captions found for video")
+            print("❌ All caption tracks failed")
             return nil
+            
         } catch {
             print("❌ Transcript fetch error: \(error.localizedDescription)")
             return nil
         }
     }
     
+    /// Fetch caption data from a specific URL
+    private func fetchCaptionData(from url: URL, format: String) async -> String? {
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("https://www.youtube.com", forHTTPHeaderField: "Referer")
+        request.setValue("https://www.youtube.com", forHTTPHeaderField: "Origin")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("application/json, text/xml, */*", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                print("📝 Caption response (\(format)): status=\(httpResponse.statusCode), size=\(data.count) bytes")
+            }
+            
+            // If empty response, skip
+            if data.count == 0 {
+                return nil
+            }
+            
+            // Try parsing based on format
+            if format == "json3" {
+                if let transcript = parseTranscriptJSON3(data) {
+                    return transcript
+                }
+            }
+            
+            // Always try XML as fallback
+            if let transcript = parseTranscriptXML(data) {
+                return transcript
+            }
+            
+            // Try JSON3 even if format was different (YouTube sometimes ignores fmt)
+            if let transcript = parseTranscriptJSON3(data) {
+                return transcript
+            }
+            
+            return nil
+        } catch {
+            print("📝 Caption fetch error for \(format): \(error.localizedDescription)")
+            return nil
+        }
+    }
+    
+    /// Extract ALL caption track URLs from YouTube page HTML
+    /// Returns array of (language, baseUrl) tuples
+    private func extractAllCaptionTracks(from html: String) -> [(lang: String, baseUrl: String)] {
+        var tracks: [(lang: String, baseUrl: String)] = []
+        
+        // Look for captionTracks array in ytInitialPlayerResponse
+        // Pattern: "captionTracks":[{"baseUrl":"...","name":{"simpleText":"..."},"languageCode":"..."}]
+        let pattern = #""captionTracks"\s*:\s*\[(.*?)\]"#
+        
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let range = Range(match.range(at: 1), in: html) else {
+            print("📝 Could not find captionTracks array in HTML")
+            return []
+        }
+        
+        let captionTracksJSON = String(html[range])
+        
+        // Extract individual tracks
+        let trackPattern = #"\{"baseUrl"\s*:\s*"([^"]+)"[^}]*"languageCode"\s*:\s*"([^"]+)""#
+        let altTrackPattern = #""languageCode"\s*:\s*"([^"]+)"[^}]*"baseUrl"\s*:\s*"([^"]+)""#
+        
+        // Try first pattern
+        if let trackRegex = try? NSRegularExpression(pattern: trackPattern, options: .dotMatchesLineSeparators) {
+            let matches = trackRegex.matches(in: captionTracksJSON, range: NSRange(captionTracksJSON.startIndex..., in: captionTracksJSON))
+            
+            for match in matches {
+                if let urlRange = Range(match.range(at: 1), in: captionTracksJSON),
+                   let langRange = Range(match.range(at: 2), in: captionTracksJSON) {
+                    var urlString = String(captionTracksJSON[urlRange])
+                    let lang = String(captionTracksJSON[langRange])
+                    
+                    // Unescape
+                    urlString = urlString.replacingOccurrences(of: "\\u0026", with: "&")
+                    urlString = urlString.replacingOccurrences(of: "\\/", with: "/")
+                    
+                    // Handle relative URLs
+                    if urlString.hasPrefix("/") {
+                        urlString = "https://www.youtube.com" + urlString
+                    }
+                    
+                    tracks.append((lang: lang, baseUrl: urlString))
+                }
+            }
+        }
+        
+        // If no matches, try alternate pattern
+        if tracks.isEmpty {
+            if let trackRegex = try? NSRegularExpression(pattern: altTrackPattern, options: .dotMatchesLineSeparators) {
+                let matches = trackRegex.matches(in: captionTracksJSON, range: NSRange(captionTracksJSON.startIndex..., in: captionTracksJSON))
+                
+                for match in matches {
+                    if let langRange = Range(match.range(at: 1), in: captionTracksJSON),
+                       let urlRange = Range(match.range(at: 2), in: captionTracksJSON) {
+                        var urlString = String(captionTracksJSON[urlRange])
+                        let lang = String(captionTracksJSON[langRange])
+                        
+                        urlString = urlString.replacingOccurrences(of: "\\u0026", with: "&")
+                        urlString = urlString.replacingOccurrences(of: "\\/", with: "/")
+                        
+                        if urlString.hasPrefix("/") {
+                            urlString = "https://www.youtube.com" + urlString
+                        }
+                        
+                        tracks.append((lang: lang, baseUrl: urlString))
+                    }
+                }
+            }
+        }
+        
+        // Log found tracks
+        for track in tracks {
+            print("📝 Found track: \(track.lang)")
+        }
+        
+        return tracks
+    }
+
     /// Extract captions URL from YouTube page HTML
     /// In 2025, YouTube requires a 'pot' (proof of origin token) parameter or returns empty responses
     private func extractCaptionsURL(from html: String, videoId: String) -> URL? {
