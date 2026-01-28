@@ -141,13 +141,17 @@ class ShareViewController: UIViewController {
             return nil
         }
         
-        // Try to get transcript using YouTube's innertube API
+        // Try to get transcript using YouTube's page scraping
         do {
             // First, get the video page to find available captions
             let videoPageURL = URL(string: "https://www.youtube.com/watch?v=\(id)")!
             var pageRequest = URLRequest(url: videoPageURL)
-            pageRequest.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-            pageRequest.timeoutInterval = 15
+            pageRequest.setValue(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                forHTTPHeaderField: "User-Agent"
+            )
+            pageRequest.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+            pageRequest.timeoutInterval = 20
             
             let (pageData, _) = try await URLSession.shared.data(for: pageRequest)
             guard let pageHTML = String(data: pageData, encoding: .utf8) else {
@@ -155,13 +159,40 @@ class ShareViewController: UIViewController {
                 return nil
             }
             
+            print("📱 Share: Fetched YouTube page (\(pageHTML.count) bytes)")
+            
             // Extract captions URL from ytInitialPlayerResponse
             if let captionsURL = extractCaptionsURL(from: pageHTML, videoId: id) {
-                let (captionData, _) = try await URLSession.shared.data(from: captionsURL)
-                if let transcript = parseTranscriptXML(captionData) {
-                    print("Successfully fetched transcript (\(transcript.count) chars)")
-                    return transcript
+                print("📱 Share: Found captions URL")
+                
+                // IMPORTANT: Use proper request with headers for caption fetch
+                var captionRequest = URLRequest(url: captionsURL)
+                captionRequest.setValue(
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                    forHTTPHeaderField: "User-Agent"
+                )
+                captionRequest.setValue("https://www.youtube.com", forHTTPHeaderField: "Referer")
+                captionRequest.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+                captionRequest.timeoutInterval = 15
+                
+                let (captionData, captionResponse) = try await URLSession.shared.data(for: captionRequest)
+                
+                // Debug logging
+                if let httpResponse = captionResponse as? HTTPURLResponse {
+                    print("📱 Share: Caption status: \(httpResponse.statusCode), size: \(captionData.count) bytes")
                 }
+                
+                if let transcript = parseTranscriptXML(captionData) {
+                    print("📱 Share: ✅ Got transcript (\(transcript.count) chars)")
+                    return transcript
+                } else if let transcript = parseTranscriptJSON3(captionData) {
+                    print("📱 Share: ✅ Got transcript from JSON3 (\(transcript.count) chars)")
+                    return transcript
+                } else if captionData.count == 0 {
+                    print("📱 Share: ❌ Empty response from YouTube")
+                }
+            } else {
+                print("📱 Share: ❌ No captions URL found")
             }
             
             print("No captions found for video")
@@ -170,6 +201,7 @@ class ShareViewController: UIViewController {
             print("Transcript fetch error: \(error.localizedDescription)")
             return nil
         }
+
     }
     
     /// Extract captions URL from YouTube page HTML
@@ -226,6 +258,28 @@ class ShareViewController: UIViewController {
                     text = text.replacingOccurrences(of: "&#39;", with: "'")
                     text = text.replacingOccurrences(of: "\n", with: " ")
                     transcript += text + " "
+                }
+            }
+        }
+        
+        return transcript.isEmpty ? nil : transcript.trimmingCharacters(in: .whitespaces)
+    }
+    
+    /// Parse transcript from YouTube's JSON3 format (alternative to XML)
+    private func parseTranscriptJSON3(_ data: Data) -> String? {
+        // JSON3 format: {"events":[{"segs":[{"utf8":"text"}],...]}
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let events = json["events"] as? [[String: Any]] else {
+            return nil
+        }
+        
+        var transcript = ""
+        for event in events {
+            if let segs = event["segs"] as? [[String: Any]] {
+                for seg in segs {
+                    if let text = seg["utf8"] as? String {
+                        transcript += text
+                    }
                 }
             }
         }
