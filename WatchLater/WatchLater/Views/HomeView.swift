@@ -9,9 +9,10 @@ struct HomeView: View {
     /// Extract video ID from YouTube URL
     private var videoId: String? {
         let patterns = [
-            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"#,
+            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})"#,
             #"(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})"#
         ]
+
         
         for pattern in patterns {
             if let regex = try? NSRegularExpression(pattern: pattern),
