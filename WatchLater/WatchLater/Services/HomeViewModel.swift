@@ -268,6 +268,11 @@ class HomeViewModel: ObservableObject {
                     urlString = "https://www.youtube.com" + urlString
                 }
                 
+                // Add fmt=json3 for more reliable responses (YouTube returns empty for some requests)
+                if !urlString.contains("fmt=") {
+                    urlString += "&fmt=json3"
+                }
+                
                 if let url = URL(string: urlString) {
                     return url
                 }

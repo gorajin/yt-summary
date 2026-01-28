@@ -226,6 +226,13 @@ class ShareViewController: UIViewController {
                     urlString = "https://www.youtube.com" + urlString
                 }
                 
+                // Add fmt=json3 for more reliable JSON responses (YouTube returns empty for some XML requests)
+                if !urlString.contains("fmt=") {
+                    urlString += "&fmt=json3"
+                }
+                
+                print("📱 Share: Caption URL built: \(urlString.prefix(100))...")
+                
                 if let url = URL(string: urlString) {
                     return url
                 }
