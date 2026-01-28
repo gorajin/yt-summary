@@ -205,6 +205,7 @@ class ShareViewController: UIViewController {
     }
     
     /// Extract captions URL from YouTube page HTML
+    /// In 2025, YouTube requires a 'pot' (proof of origin token) parameter or returns empty responses
     private func extractCaptionsURL(from html: String, videoId: String) -> URL? {
         // Look for timedtext URL in the page
         let patterns = [
@@ -231,11 +232,43 @@ class ShareViewController: UIViewController {
                     urlString += "&fmt=json3"
                 }
                 
+                // Try to extract 'pot' (proof of origin token) from the page if not already in URL
+                // YouTube 2025 requires this or returns empty responses
+                if !urlString.contains("&pot=") {
+                    if let potToken = extractPotToken(from: html) {
+                        urlString += "&pot=\(potToken)"
+                        print("📱 Share: Added pot token to caption URL")
+                    }
+                }
+                
                 print("📱 Share: Caption URL built: \(urlString.prefix(100))...")
                 
                 if let url = URL(string: urlString) {
                     return url
                 }
+            }
+        }
+        
+        return nil
+    }
+    
+    /// Extract the 'pot' (proof of origin token) from YouTube page
+    /// This token is required for timedtext API to return non-empty responses (2025+)
+    private func extractPotToken(from html: String) -> String? {
+        // The pot token can appear in various locations in the page
+        let patterns = [
+            #""pot"\s*:\s*"([^"]+)""#,
+            #""poToken"\s*:\s*"([^"]+)""#,
+            #"pot=([^&\"]+)"#
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let range = Range(match.range(at: 1), in: html) {
+                let token = String(html[range])
+                print("📱 Share: Found pot token (\(token.count) chars)")
+                return token
             }
         }
         
