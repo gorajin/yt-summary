@@ -3,6 +3,18 @@ import SwiftUI
 
 class ShareViewController: UIViewController {
     
+    /// Dedicated URLSession for YouTube requests with cookie storage
+    /// YouTube requires session continuity between page load and caption fetch
+    private lazy var youtubeSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.httpCookieStorage = HTTPCookieStorage.shared
+        config.httpCookieAcceptPolicy = .always
+        config.httpShouldSetCookies = true
+        config.httpAdditionalHeaders = [
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        ]
+        return URLSession(configuration: config)
+    }()
     override func viewDidLoad() {
         super.viewDidLoad()
         
@@ -348,7 +360,7 @@ class ShareViewController: UIViewController {
             pageRequest.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
             pageRequest.timeoutInterval = 20
             
-            let (pageData, _) = try await URLSession.shared.data(for: pageRequest)
+            let (pageData, _) = try await youtubeSession.data(for: pageRequest)
             guard let pageHTML = String(data: pageData, encoding: .utf8) else {
                 print("📱 Share: Could not decode YouTube page")
                 return nil
@@ -451,7 +463,7 @@ class ShareViewController: UIViewController {
         request.timeoutInterval = 15
         
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await youtubeSession.data(for: request)
             
             if let httpResponse = response as? HTTPURLResponse {
                 print("📱 Share: Caption response (\(format)): status=\(httpResponse.statusCode), size=\(data.count) bytes")
