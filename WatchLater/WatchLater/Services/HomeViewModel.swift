@@ -318,16 +318,25 @@ class HomeViewModel: ObservableObject {
         }
         
         // Find the matching closing bracket by counting brackets
+        // Safety limit prevents infinite loop on malformed HTML
         var bracketCount = 1
         var endIndex = startIndex
         var searchIndex = startIndex
+        var iterations = 0
+        let maxIterations = 100000 // Caption tracks JSON is typically < 10KB
         
-        while bracketCount > 0 && searchIndex < html.endIndex {
+        while bracketCount > 0 && searchIndex < html.endIndex && iterations < maxIterations {
+            iterations += 1
             let char = html[searchIndex]
             if char == "[" { bracketCount += 1 }
             else if char == "]" { bracketCount -= 1 }
             if bracketCount > 0 { searchIndex = html.index(after: searchIndex) }
             endIndex = searchIndex
+        }
+        
+        if iterations >= maxIterations {
+            print("📝 ⚠️ Caption extraction hit safety limit - malformed HTML?")
+            return []
         }
         
         let captionTracksJSON = String(html[startIndex..<endIndex])

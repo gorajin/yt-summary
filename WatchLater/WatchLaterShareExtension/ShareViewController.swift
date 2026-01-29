@@ -100,7 +100,9 @@ class ShareViewController: UIViewController {
             do {
                 // Fetch transcript client-side (bypasses YouTube IP blocking)
                 let transcript = await fetchTranscript(for: url)
-                let result = try await callSummarizeAPI(url: url, token: token, transcript: transcript)
+                
+                // Try API call, with automatic token refresh on 401
+                let result = try await callAPIWithTokenRefresh(url: url, token: token, transcript: transcript)
                 
                 await MainActor.run {
                     if result.success {
@@ -116,6 +118,74 @@ class ShareViewController: UIViewController {
             }
         }
     }
+    
+    /// Calls summarize API with automatic retry on token expiry
+    private func callAPIWithTokenRefresh(url: String, token: String, transcript: String?) async throws -> SummarizeResult {
+        do {
+            return try await callSummarizeAPI(url: url, token: token, transcript: transcript)
+        } catch let error as NSError where error.code == 401 {
+            // Token expired - try to refresh
+            print("📱 Share: Token expired, attempting refresh...")
+            
+            guard let refreshToken = KeychainHelper.get(forKey: "supabase_refresh_token") else {
+                print("📱 Share: No refresh token available")
+                throw error // Re-throw original error
+            }
+            
+            guard let newToken = await refreshAccessToken(refreshToken: refreshToken) else {
+                print("📱 Share: Token refresh failed")
+                throw error // Re-throw original error
+            }
+            
+            print("📱 Share: Token refreshed successfully, retrying API call...")
+            return try await callSummarizeAPI(url: url, token: newToken, transcript: transcript)
+        }
+    }
+    
+    /// Refresh an expired access token using Supabase
+    private func refreshAccessToken(refreshToken: String) async -> String? {
+        let supabaseURL = "https://lnmlpwcntttemnisoxrf.supabase.co"
+        let supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxubWxwd2NudHR0ZW1uaXNveHJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgxNjgxNjksImV4cCI6MjA4Mzc0NDE2OX0.onowpihNxyb_Z2JSxGuwLdVb_HF2NWmePN-9UW1fBJY"
+        
+        guard let url = URL(string: "\(supabaseURL)/auth/v1/token?grant_type=refresh_token") else {
+            return nil
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.timeoutInterval = 15
+        
+        let body = ["refresh_token": refreshToken]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                return nil
+            }
+            
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let accessToken = json["access_token"] as? String else {
+                return nil
+            }
+            
+            // Save the new tokens to Keychain for future use
+            KeychainHelper.save(accessToken, forKey: "supabase_access_token")
+            if let newRefreshToken = json["refresh_token"] as? String {
+                KeychainHelper.save(newRefreshToken, forKey: "supabase_refresh_token")
+            }
+            
+            print("📱 Share: ✅ Token refreshed and saved")
+            return accessToken
+        } catch {
+            print("📱 Share: Token refresh network error: \(error)")
+            return nil
+        }
+    }
+
     
     /// Fetch transcript from YouTube (client-side to bypass IP blocking)
     /// Enhanced to try ALL available caption tracks, not just the first one
@@ -285,16 +355,25 @@ class ShareViewController: UIViewController {
         }
         
         // Find the matching closing bracket by counting brackets
+        // Safety limit prevents infinite loop on malformed HTML
         var bracketCount = 1
         var endIndex = startIndex
         var searchIndex = startIndex
+        var iterations = 0
+        let maxIterations = 100000 // Caption tracks JSON is typically < 10KB
         
-        while bracketCount > 0 && searchIndex < html.endIndex {
+        while bracketCount > 0 && searchIndex < html.endIndex && iterations < maxIterations {
+            iterations += 1
             let char = html[searchIndex]
             if char == "[" { bracketCount += 1 }
             else if char == "]" { bracketCount -= 1 }
             if bracketCount > 0 { searchIndex = html.index(after: searchIndex) }
             endIndex = searchIndex
+        }
+        
+        if iterations >= maxIterations {
+            print("📱 Share: ⚠️ Caption extraction hit safety limit - malformed HTML?")
+            return []
         }
         
         let captionTracksJSON = String(html[startIndex..<endIndex])
