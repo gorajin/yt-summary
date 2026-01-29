@@ -464,21 +464,32 @@ class HomeViewModel: ObservableObject {
     
     /// Extract the 'pot' (proof of origin token) from YouTube page
     /// This token is required for timedtext API to return non-empty responses (2025+)
+    /// YouTube 2026: Token is now in serviceIntegrityDimensions.poToken
     private func extractPotToken(from html: String) -> String? {
         // The pot token can appear in various locations in the page
+        // Order matters - try the most common/reliable patterns first
         let patterns = [
-            #""pot"\s*:\s*"([^"]+)""#,
+            // 2026 format: serviceIntegrityDimensions contains poToken
+            #""serviceIntegrityDimensions"\s*:\s*\{[^}]*"poToken"\s*:\s*"([^"]+)""#,
+            // Alternative nesting formats
             #""poToken"\s*:\s*"([^"]+)""#,
-            #"pot=([^&\"]+)"#
+            #""pot"\s*:\s*"([^"]+)""#,
+            // URL parameter format
+            #"pot=([^&\"]+)"#,
+            // BotGuard token format (may be base64 encoded)
+            #""botguardData"\s*:\s*\{[^}]*"token"\s*:\s*"([^"]+)""#
         ]
         
         for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators),
                let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
                let range = Range(match.range(at: 1), in: html) {
                 let token = String(html[range])
-                print("📝 Found pot token (\(token.count) chars)")
-                return token
+                // Skip very short tokens (likely false positives)
+                if token.count > 20 {
+                    print("📝 Found pot token (\(token.count) chars)")
+                    return token
+                }
             }
         }
         

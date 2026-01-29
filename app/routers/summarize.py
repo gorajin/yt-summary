@@ -155,15 +155,12 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
     Returns immediately with a job_id. Poll /status/{job_id} for progress.
     This async approach prevents timeouts for long videos (2+ hours).
     
-    NOTE: Transcript is now required. Client-side extraction is the primary path.
-    Server-side extraction is deprecated and will be removed.
+    NOTE: Transcript is preferred from client (bypasses IP blocking).
+    If client fails, server-side extraction via youtube-transcript-api is used as fallback.
     """
-    # Validate: transcript is now required
-    if not body.transcript:
-        raise HTTPException(
-            status_code=400,
-            detail="Transcript is required. Please update your app to the latest version."
-        )
+    # Validate: transcript is optional, server will fall back if not provided
+    # (Client-side extraction is preferred but may fail due to YouTube changes)
+
     
     try:
         # Check user-level rate limit (monthly quota)

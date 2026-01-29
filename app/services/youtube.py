@@ -1,9 +1,10 @@
 """
 YouTube transcript extraction service.
 
-⚠️ DEPRECATED: Server-side extraction is deprecated as of Jan 2026.
-The iOS client now handles transcript extraction locally, which bypasses
-YouTube's aggressive IP blocking. This module is kept for admin/debug use.
+Server-side extraction is available as a fallback when client-side extraction fails.
+The iOS client handles transcript extraction locally to bypass YouTube's IP blocking,
+but YouTube frequently changes their anti-bot measures. When client fails, this module
+provides server-side extraction via youtube-transcript-api and yt-dlp.
 
 Provides functions for extracting video IDs, titles, and transcripts
 from YouTube videos using multiple fallback methods.
