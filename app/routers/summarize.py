@@ -1,15 +1,20 @@
 """
 Summarize API router.
 
-Provides the main /summarize endpoint for processing YouTube videos.
+Provides the /summarize endpoint for processing YouTube videos asynchronously.
+Jobs are created immediately and processed in the background.
 """
 
+import asyncio
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 
-from ..models import SummarizeRequest, SummarizeResponse
+from ..models import SummarizeRequest, SummarizeResponse, TranscriptSegment
 from ..services.youtube import extract_video_id, get_transcript_with_timestamps
 from ..services.gemini import process_long_transcript
 from ..services.notion import create_lecture_notes_page
+from ..services.jobs import create_job, update_job, JobStatus
 from .auth import get_current_user, check_rate_limit, increment_usage, supabase
 
 
@@ -47,15 +52,119 @@ def get_friendly_error(error: str) -> str:
     return error
 
 
-@router.post("/summarize", response_model=SummarizeResponse)
-# NOTE: No IP-based rate limit - user quota (check_rate_limit) is the real protection
-# IP limits caused false positives on mobile networks and Railway shared IPs
-async def summarize(request: Request, body: SummarizeRequest, user: dict = Depends(get_current_user)):
-    """Create a summary (authenticated).
+async def process_summarization_job(
+    job_id: str,
+    user: dict,
+    url: str,
+    transcript: Optional[str],
+    video_id: str
+):
+    """Background task to process a summarization job.
     
-    Protected by user-level monthly quota, not IP-based limits.
-    Processing takes 10-30s anyway which provides natural rate limiting.
+    Updates job progress at each stage for client polling.
     """
+    try:
+        notion_token = user.get("notion_access_token")
+        database_id = user.get("notion_database_id")
+        
+        # Stage 1: Transcript (0-25%)
+        await update_job(job_id, status=JobStatus.PROCESSING, progress=5, stage="Fetching transcript")
+        
+        if transcript:
+            print(f"  [Job {job_id[:8]}] Using client-provided transcript...")
+            segments = [TranscriptSegment(text=transcript, start_time=0, end_time=0)]
+            video_title = None
+            await update_job(job_id, progress=25, stage="Transcript received")
+        else:
+            # Server-side extraction (deprecated path)
+            print(f"  [Job {job_id[:8]}] Fetching timestamped transcript (server-side)...")
+            segments, transcript, video_title = get_transcript_with_timestamps(url)
+            await update_job(job_id, progress=25, stage="Transcript extracted")
+        
+        print(f"  [Job {job_id[:8]}] Got {len(segments)} segments ({len(transcript)} chars)")
+        
+        # Stage 2: Analysis (25-50%)
+        await update_job(job_id, progress=30, stage="Analyzing content")
+        
+        # Stage 3: Summarization (50-85%) - longest stage
+        await update_job(job_id, progress=50, stage="Generating summary")
+        print(f"  [Job {job_id[:8]}] Generating lecture notes...")
+        notes = process_long_transcript(segments, video_title, video_id)
+        await update_job(job_id, progress=85, stage="Summary complete")
+        print(f"  [Job {job_id[:8]}] Generated: {notes.title}")
+        
+        # Stage 4: Notion (85-100%)
+        await update_job(job_id, progress=90, stage="Saving to Notion")
+        print(f"  [Job {job_id[:8]}] Creating Notion page...")
+        notion_url = create_lecture_notes_page(
+            notion_token=notion_token,
+            database_id=database_id,
+            notes=notes,
+            video_url=f"https://youtu.be/{video_id}",
+            video_id=video_id
+        )
+        
+        # Increment usage (non-critical)
+        try:
+            increment_usage(user["id"])
+        except Exception as usage_err:
+            print(f"  [Job {job_id[:8]}] ⚠ Usage increment failed: {usage_err}")
+        
+        # Log summary (non-critical)
+        try:
+            supabase.table("summaries").insert({
+                "user_id": user["id"],
+                "youtube_url": url,
+                "title": notes.title,
+                "notion_url": notion_url
+            }).execute()
+        except Exception as log_err:
+            print(f"  [Job {job_id[:8]}] ⚠ Summary logging failed: {log_err}")
+        
+        # Complete!
+        await update_job(
+            job_id,
+            status=JobStatus.COMPLETE,
+            progress=100,
+            stage="Complete",
+            result={
+                "success": True,
+                "title": notes.title,
+                "notionUrl": notion_url
+            }
+        )
+        print(f"  [Job {job_id[:8]}] ✓ Done → {notion_url}")
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"  [Job {job_id[:8]}] ✗ Error: {error_msg}")
+        friendly_error = get_friendly_error(error_msg)
+        await update_job(
+            job_id,
+            status=JobStatus.FAILED,
+            progress=0,
+            stage="Failed",
+            error=friendly_error
+        )
+
+
+@router.post("/summarize")
+async def summarize(request: Request, body: SummarizeRequest, user: dict = Depends(get_current_user)):
+    """Create a summarization job (authenticated).
+    
+    Returns immediately with a job_id. Poll /status/{job_id} for progress.
+    This async approach prevents timeouts for long videos (2+ hours).
+    
+    NOTE: Transcript is now required. Client-side extraction is the primary path.
+    Server-side extraction is deprecated and will be removed.
+    """
+    # Validate: transcript is now required
+    if not body.transcript:
+        raise HTTPException(
+            status_code=400,
+            detail="Transcript is required. Please update your app to the latest version."
+        )
+    
     try:
         # Check user-level rate limit (monthly quota)
         remaining = check_rate_limit(user)
@@ -72,69 +181,38 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
         if not video_id:
             raise HTTPException(status_code=400, detail="Invalid YouTube URL")
         
-        # Process video
-        print(f"Processing for user {user['id']}: {body.url}")
+        # Create job
+        job = await create_job(user["id"], body.url)
+        print(f"Created job {job.id[:8]} for user {user['id']}: {body.url}")
         
-        # Use client-provided transcript if available (bypasses YouTube IP blocking)
-        if body.transcript:
-            print("  → Using client-provided transcript...")
-            # Parse plain text transcript into segments (no timestamps from client)
-            from ..models import TranscriptSegment
-            segments = [TranscriptSegment(text=body.transcript, start_time=0, end_time=0)]
-            transcript = body.transcript
-            video_title = None  # Will be detected from transcript
-            print(f"  → Got client transcript ({len(transcript)} chars)")
-        else:
-            print("  → Fetching timestamped transcript (server-side)...")
-            segments, transcript, video_title = get_transcript_with_timestamps(body.url)
-            print(f"  → Got {len(segments)} segments ({len(transcript)} chars)")
-        
-        print("  → Generating lecture notes (auto-detects long videos)...")
-        notes = process_long_transcript(segments, video_title, video_id)
-        print(f"  → Generated: {notes.title} (type: {notes.content_type.value})")
-        
-        print("  → Creating Notion page with rich formatting...")
-        notion_url = create_lecture_notes_page(
-            notion_token=notion_token,
-            database_id=database_id,
-            notes=notes,
-            video_url=f"https://youtu.be/{video_id}",
-            video_id=video_id
+        # Spawn background task
+        asyncio.create_task(
+            process_summarization_job(
+                job_id=job.id,
+                user=user,
+                url=body.url,
+                transcript=body.transcript,
+                video_id=video_id
+            )
         )
-        print(f"  ✓ Done → {notion_url}")
         
-        # Increment usage (non-critical)
-        try:
-            increment_usage(user["id"])
-        except Exception as usage_err:
-            print(f"  ⚠ Usage increment failed (non-critical): {usage_err}")
-        
-        # Log summary (non-critical)
-        try:
-            supabase.table("summaries").insert({
-                "user_id": user["id"],
-                "youtube_url": body.url,
-                "title": notes.title,
-                "notion_url": notion_url  # Store for history feature
-            }).execute()
-        except Exception as log_err:
-            print(f"  ⚠ Summary logging failed (non-critical): {log_err}")
-        
-        return SummarizeResponse(
-            success=True,
-            title=notes.title,
-            notionUrl=notion_url,
-            remaining=remaining - 1 if remaining > 0 else -1
+        # Return immediately with job ID (HTTP 202 Accepted)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "job_id": job.id,
+                "status": "pending",
+                "message": "Job created. Poll /status/{job_id} for progress.",
+                "remaining": remaining - 1 if remaining > 0 else -1
+            }
         )
         
     except HTTPException:
         raise
     except Exception as e:
         error_msg = str(e)
-        print(f"  ✗ Error: {error_msg}")
-        
-        friendly_error = get_friendly_error(error_msg)
-        return SummarizeResponse(success=False, error=friendly_error)
+        print(f"  ✗ Error creating job: {error_msg}")
+        raise HTTPException(status_code=500, detail=get_friendly_error(error_msg))
 
 
 @router.post("/summarize/legacy")

@@ -18,7 +18,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.config import ALLOWED_ORIGINS, validate_startup
-from app.routers import auth, summarize, history
+from app.routers import auth, summarize, history, status, config_router
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -49,6 +49,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(summarize.router)
 app.include_router(history.router)
+app.include_router(status.router)
+app.include_router(config_router.router)
 
 
 @app.on_event("startup")

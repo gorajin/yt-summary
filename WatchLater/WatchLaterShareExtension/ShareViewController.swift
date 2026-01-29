@@ -101,8 +101,19 @@ class ShareViewController: UIViewController {
                 // Fetch transcript client-side (bypasses YouTube IP blocking)
                 let transcript = await fetchTranscript(for: url)
                 
-                // Try API call, with automatic token refresh on 401
-                let result = try await callAPIWithTokenRefresh(url: url, token: token, transcript: transcript)
+                // Transcript is now required
+                guard let transcript = transcript, !transcript.isEmpty else {
+                    await MainActor.run {
+                        self.showError("Could not get transcript. This video may not have captions enabled.")
+                    }
+                    return
+                }
+                
+                // Initiate job and get jobId (async polling architecture)
+                let jobId = try await initiateJobWithTokenRefresh(url: url, token: token, transcript: transcript)
+                
+                // Poll for completion
+                let result = try await pollJobStatus(jobId: jobId, token: token)
                 
                 await MainActor.run {
                     if result.success {
@@ -119,27 +130,137 @@ class ShareViewController: UIViewController {
         }
     }
     
-    /// Calls summarize API with automatic retry on token expiry
-    private func callAPIWithTokenRefresh(url: String, token: String, transcript: String?) async throws -> SummarizeResult {
+    /// Initiates a summarization job with automatic retry on token expiry
+    private func initiateJobWithTokenRefresh(url: String, token: String, transcript: String) async throws -> String {
         do {
-            return try await callSummarizeAPI(url: url, token: token, transcript: transcript)
+            return try await initiateJob(url: url, token: token, transcript: transcript)
         } catch let error as NSError where error.code == 401 {
             // Token expired - try to refresh
             print("📱 Share: Token expired, attempting refresh...")
             
             guard let refreshToken = KeychainHelper.get(forKey: "supabase_refresh_token") else {
                 print("📱 Share: No refresh token available")
-                throw error // Re-throw original error
+                throw error
             }
             
             guard let newToken = await refreshAccessToken(refreshToken: refreshToken) else {
                 print("📱 Share: Token refresh failed")
-                throw error // Re-throw original error
+                throw error
             }
             
-            print("📱 Share: Token refreshed successfully, retrying API call...")
-            return try await callSummarizeAPI(url: url, token: newToken, transcript: transcript)
+            print("📱 Share: Token refreshed successfully, retrying...")
+            return try await initiateJob(url: url, token: newToken, transcript: transcript)
         }
+    }
+    
+    /// Initiate a summarization job and return jobId
+    private func initiateJob(url: String, token: String, transcript: String) async throws -> String {
+        let endpoint = URL(string: "https://watchlater.up.railway.app/summarize")!
+        
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30  // Quick timeout - job creation is fast
+        
+        let bodyDict: [String: String] = ["url": url, "transcript": transcript]
+        request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "WatchLater", code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid server response"])
+        }
+        
+        print("📱 Share: Initiate job response: \(httpResponse.statusCode)")
+        
+        if httpResponse.statusCode == 401 {
+            throw NSError(domain: "WatchLater", code: 401,
+                userInfo: [NSLocalizedDescriptionKey: "Please sign in first"])
+        }
+        
+        if httpResponse.statusCode >= 400 {
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw NSError(domain: "WatchLater", code: httpResponse.statusCode,
+                    userInfo: [NSLocalizedDescriptionKey: detail])
+            }
+            throw NSError(domain: "WatchLater", code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "Server error"])
+        }
+        
+        // Parse job_id from 202 response
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let jobId = json["job_id"] as? String else {
+            throw NSError(domain: "WatchLater", code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid job response"])
+        }
+        
+        print("📱 Share: Job created: \(jobId.prefix(8))...")
+        return jobId
+    }
+    
+    /// Poll job status until complete or failed
+    private func pollJobStatus(jobId: String, token: String, maxAttempts: Int = 120) async throws -> SummarizeResult {
+        let statusURL = URL(string: "https://watchlater.up.railway.app/status/\(jobId)")!
+        
+        for attempt in 1...maxAttempts {
+            var request = URLRequest(url: statusURL)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 10
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                try await Task.sleep(nanoseconds: 2_000_000_000)  // 2s
+                continue
+            }
+            
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let status = json["status"] as? String,
+                  let progress = json["progress"] as? Int else {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                continue
+            }
+            
+            let stage = json["stage"] as? String ?? "Processing"
+            print("📱 Share: Poll \(attempt): \(status) \(progress)% - \(stage)")
+            
+            // Update UI progress based on real server progress
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("UpdateServerProgress"),
+                    object: nil,
+                    userInfo: ["progress": progress, "stage": stage]
+                )
+            }
+            
+            if status == "complete" {
+                if let result = json["result"] as? [String: Any] {
+                    return SummarizeResult(
+                        success: result["success"] as? Bool ?? true,
+                        title: result["title"] as? String,
+                        notionUrl: result["notionUrl"] as? String,
+                        error: nil,
+                        remaining: nil
+                    )
+                }
+                return SummarizeResult(success: true, title: "Summary saved!", notionUrl: nil, error: nil, remaining: nil)
+            }
+            
+            if status == "failed" {
+                let error = json["error"] as? String ?? "Processing failed"
+                return SummarizeResult(success: false, title: nil, notionUrl: nil, error: error, remaining: nil)
+            }
+            
+            // Wait 2 seconds before next poll
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        
+        throw NSError(domain: "WatchLater", code: 0,
+            userInfo: [NSLocalizedDescriptionKey: "Processing timed out. Please try again."])
     }
     
     /// Refresh an expired access token using Supabase
@@ -574,80 +695,7 @@ class ShareViewController: UIViewController {
         return transcript.isEmpty ? nil : transcript.trimmingCharacters(in: .whitespaces)
     }
     
-    private func callSummarizeAPI(url: String, token: String, transcript: String?) async throws -> SummarizeResult {
-        let endpoint = URL(string: "https://watchlater.up.railway.app/summarize")!
-        
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 120
-        
-        // Include transcript if available (bypasses server-side YouTube fetch)
-        var bodyDict: [String: String] = ["url": url]
-        if let transcript = transcript {
-            bodyDict["transcript"] = transcript
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        // Debug: log the raw response
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("API Response: \(responseString.prefix(500))")
-        }
-        
-        // Check HTTP status
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw NSError(domain: "WatchLater", code: 0,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid server response"])
-        }
-        
-        print("HTTP Status: \(httpResponse.statusCode)")
-        
-        // Handle specific error codes
-        if httpResponse.statusCode == 401 {
-            throw NSError(domain: "WatchLater", code: 401, 
-                userInfo: [NSLocalizedDescriptionKey: "Please sign in to the WatchLater app first"])
-        }
-        
-        if httpResponse.statusCode == 429 {
-            throw NSError(domain: "WatchLater", code: 429,
-                userInfo: [NSLocalizedDescriptionKey: "Rate limit exceeded. Please wait a moment."])
-        }
-        
-        // Handle all other HTTP errors (400, 500, etc.) BEFORE trying to decode
-        if httpResponse.statusCode >= 400 {
-            // Backend returns {"detail": "error message"} for HTTP errors
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let detail = json["detail"] as? String {
-                throw NSError(domain: "WatchLater", code: httpResponse.statusCode,
-                    userInfo: [NSLocalizedDescriptionKey: detail])
-            }
-            throw NSError(domain: "WatchLater", code: httpResponse.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "Server error (\(httpResponse.statusCode))"])
-        }
-        
-        // Only decode SummarizeResult for successful responses
-        do {
-            return try JSONDecoder().decode(SummarizeResult.self, from: data)
-        } catch {
-            print("JSON Decode Error: \(error)")
-            // Fallback: try to extract any error message
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let detail = json["detail"] as? String {
-                    throw NSError(domain: "WatchLater", code: 0, 
-                        userInfo: [NSLocalizedDescriptionKey: detail])
-                }
-                if let errorMsg = json["error"] as? String {
-                    throw NSError(domain: "WatchLater", code: 0,
-                        userInfo: [NSLocalizedDescriptionKey: errorMsg])
-                }
-            }
-            throw NSError(domain: "WatchLater", code: 0,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to read server response"])
-        }
-    }
+    // REMOVED: callSummarizeAPI - replaced by initiateJob + pollJobStatus above
     
     private func showSuccess(title: String) {
         // Stop progress timer
@@ -898,6 +946,38 @@ struct ShareExtensionView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("StopProgressTimer"))) { _ in
             progressTimer?.invalidate()
             progressTimer = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("UpdateServerProgress"))) { notification in
+            // Update progress based on real server progress
+            if let userInfo = notification.userInfo,
+               let serverProgress = userInfo["progress"] as? Int,
+               let stage = userInfo["stage"] as? String {
+                
+                // Stop simulated timer - we're using real progress now
+                progressTimer?.invalidate()
+                progressTimer = nil
+                
+                // Convert server progress (0-100) to our internal representation
+                let normalizedProgress = Double(serverProgress) / 100.0
+                
+                // Map server stage to our stage enum
+                if stage.lowercased().contains("transcript") {
+                    currentStage = .fetchingTranscript
+                    stageProgress = min(normalizedProgress * 4.0, 1.0)  // 0-25% maps to this stage
+                } else if stage.lowercased().contains("analyz") {
+                    currentStage = .analyzingContent
+                    stageProgress = min((normalizedProgress - 0.25) * 4.0, 1.0)  // 25-50%
+                } else if stage.lowercased().contains("summary") || stage.lowercased().contains("generat") {
+                    currentStage = .generatingSummary
+                    stageProgress = min((normalizedProgress - 0.50) * 2.86, 1.0)  // 50-85%
+                } else if stage.lowercased().contains("notion") || stage.lowercased().contains("sav") {
+                    currentStage = .savingToNotion
+                    stageProgress = min((normalizedProgress - 0.85) * 6.67, 1.0)  // 85-100%
+                } else if stage.lowercased().contains("complete") {
+                    currentStage = .savingToNotion
+                    stageProgress = 1.0
+                }
+            }
         }
     }
     
