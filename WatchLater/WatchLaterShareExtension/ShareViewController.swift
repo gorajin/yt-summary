@@ -235,6 +235,14 @@ class ShareViewController: UIViewController {
             
             print("📱 Share: Fetched YouTube page (\(pageHTML.count) bytes)")
             
+            // Extract pot token first - YouTube 2025+ requires this or returns empty responses
+            let potToken = extractPotToken(from: pageHTML)
+            if let pot = potToken {
+                print("📱 Share: Found pot token (\(pot.count) chars)")
+            } else {
+                print("📱 Share: ⚠️ No pot token found - captions may fail")
+            }
+            
             // Extract ALL caption tracks, not just the first one
             let captionTracks = extractAllCaptionTracks(from: pageHTML)
             print("📱 Share: Found \(captionTracks.count) caption tracks")
@@ -273,6 +281,12 @@ class ShareViewController: UIViewController {
                         urlString = urlString.replacingOccurrences(of: #"fmt=\w+"#, with: "fmt=\(format)", options: .regularExpression)
                     } else {
                         urlString += "&fmt=\(format)"
+                    }
+                    
+                    // Add pot token if we have it and it's not already in URL
+                    // This is CRITICAL - YouTube returns 0 bytes without it
+                    if let pot = potToken, !urlString.contains("&pot=") {
+                        urlString += "&pot=\(pot)"
                     }
                     
                     guard let captionURL = URL(string: urlString) else { continue }
