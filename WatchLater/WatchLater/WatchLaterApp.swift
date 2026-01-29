@@ -3,12 +3,14 @@ import SwiftUI
 @main
 struct WatchLaterApp: App {
     @StateObject private var authManager = AuthManager()
+    @StateObject private var storeManager = StoreManager()
     @State private var shouldRefreshProfile = false
     
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(authManager)
+                .environmentObject(storeManager)
                 .onOpenURL { url in
                     handleIncomingURL(url)
                 }

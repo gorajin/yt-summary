@@ -296,7 +296,9 @@ struct NotionConnectionCard: View {
 
 struct SettingsView: View {
     @EnvironmentObject var authManager: AuthManager
+    @EnvironmentObject var storeManager: StoreManager
     @Environment(\.dismiss) var dismiss
+    @State private var showingPaywall = false
     
     var body: some View {
         NavigationStack {
@@ -314,13 +316,26 @@ struct SettingsView: View {
                     HStack {
                         Text("Plan")
                         Spacer()
-                        Text("Free")
-                            .foregroundStyle(.secondary)
+                        if storeManager.isPro {
+                            Text("Pro")
+                                .foregroundStyle(.green)
+                                .fontWeight(.medium)
+                        } else {
+                            Text("Free")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     
-                    Button("Upgrade to Pro") {
-                        // TODO: Show paywall
+                    if !storeManager.isPro {
+                        Button("Upgrade to Pro") {
+                            showingPaywall = true
+                        }
                     }
+                }
+                
+                Section {
+                    Link("Privacy Policy", destination: URL(string: "https://watchlater.app/privacy")!)
+                        .foregroundStyle(.primary)
                 }
                 
                 Section {
@@ -337,6 +352,9 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .sheet(isPresented: $showingPaywall) {
+                PaywallView()
+            }
         }
     }
 }
@@ -344,4 +362,5 @@ struct SettingsView: View {
 #Preview {
     HomeView()
         .environmentObject(AuthManager())
+        .environmentObject(StoreManager())
 }
