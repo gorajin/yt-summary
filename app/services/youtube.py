@@ -356,7 +356,21 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
         
     except Exception as e:
         error_str = str(e).lower()
-        if '429' in error_str or 'too many' in error_str:
+        print(f"  → yt-dlp failed: {type(e).__name__}: {str(e)[:100]}")
+        
+        # Fallback 3: Try Supadata API (third-party service)
+        try:
+            from . import supadata
+            if supadata.is_available():
+                print("  → Falling back to Supadata API...")
+                return supadata.get_transcript(video_id)
+            else:
+                print("  → Supadata API not configured (no SUPADATA_API_KEY)")
+        except Exception as supadata_error:
+            print(f"  → Supadata also failed: {supadata_error}")
+        
+        # All fallbacks exhausted - return appropriate error
+        if '429' in error_str or 'too many' in error_str or 'bot' in error_str:
             raise Exception("YouTube is temporarily limiting requests. Please try again in a few minutes.")
         elif '403' in error_str or 'forbidden' in error_str:
             raise Exception("Unable to access this video's transcript. It may be private or have captions disabled.")
