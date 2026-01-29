@@ -231,7 +231,16 @@ class HomeViewModel: ObservableObject {
             for track in sortedTracks {
                 print("📝 Trying caption track: \(track.lang)")
                 
-                // Try with different formats
+                // Strategy 1: Try the raw baseUrl first (YouTube might already include required params)
+                if let rawURL = URL(string: track.baseUrl) {
+                    print("📝 Trying raw caption URL...")
+                    if let transcript = await fetchCaptionData(from: rawURL, format: "auto") {
+                        print("✅ SUCCESS with raw URL from \(track.lang) (\(transcript.count) chars)")
+                        return transcript
+                    }
+                }
+                
+                // Strategy 2: Try with different formats and pot token
                 let formats = ["json3", "srv1", "srv3"]
                 
                 for format in formats {
@@ -246,7 +255,6 @@ class HomeViewModel: ObservableObject {
                     }
                     
                     // Add pot token if we have it and it's not already in URL
-                    // This is CRITICAL - YouTube returns 0 bytes without it
                     if let pot = potToken, !urlString.contains("&pot=") {
                         urlString += "&pot=\(pot)"
                     }
