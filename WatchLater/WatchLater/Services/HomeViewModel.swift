@@ -283,7 +283,18 @@ class HomeViewModel: ObservableObject {
                 }
             }
             
-            print("❌ All caption tracks failed")
+            print("❌ All caption tracks failed with URLSession approach")
+            
+            // Fallback: Try WebKit-based extraction with JavaScript execution
+            // This executes YouTube's botguard to get the POT token dynamically
+            print("📱 Trying WebKit-based extraction...")
+            let webkitExtractor = WebKitTranscriptExtractor()
+            if let transcript = await webkitExtractor.extractTranscript(videoId: id) {
+                print("✅ WebKit extraction succeeded (\(transcript.count) chars)")
+                return transcript
+            }
+            
+            print("❌ All extraction methods failed, will use server fallback")
             return nil
             
         } catch {
