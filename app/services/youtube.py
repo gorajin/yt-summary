@@ -121,16 +121,20 @@ def get_transcript(url: str) -> Tuple[str, str]:
         print("  → Trying youtube-transcript-api...")
         from youtube_transcript_api import YouTubeTranscriptApi
         
+        # v1.2.4+ requires instance, not class methods
+        ytt_api = YouTubeTranscriptApi()
+        
         # Try using list_transcripts for better control
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript_list = ytt_api.list_transcripts(video_id)
             
             # Strategy 1: Try to find transcript in preferred languages
             transcript_data = None
             for lang in PREFERRED_LANGUAGES:
                 try:
                     transcript = transcript_list.find_transcript([lang])
-                    transcript_data = transcript.fetch()
+                    fetched = transcript.fetch()
+                    transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                     print(f"  → Found transcript in language: {lang}")
                     break
                 except Exception:
@@ -142,7 +146,8 @@ def get_transcript(url: str) -> Tuple[str, str]:
                 try:
                     for transcript in transcript_list:
                         try:
-                            transcript_data = transcript.fetch()
+                            fetched = transcript.fetch()
+                            transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                             print(f"  → Using {transcript.language} ({transcript.language_code}) transcript")
                             break
                         except Exception as fetch_err:
@@ -158,7 +163,8 @@ def get_transcript(url: str) -> Tuple[str, str]:
                     for transcript in transcript_list:
                         if transcript.is_translatable:
                             translated = transcript.translate('en')
-                            transcript_data = translated.fetch()
+                            fetched = translated.fetch()
+                            transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                             print(f"  → Translated from {transcript.language} to English")
                             break
                 except Exception as trans_err:
@@ -175,11 +181,12 @@ def get_transcript(url: str) -> Tuple[str, str]:
         except Exception as list_err:
             print(f"  → list_transcripts failed: {type(list_err).__name__}: {list_err}")
         
-        # Fallback: Try direct get_transcript with various languages  
-        print("  → Trying direct get_transcript...")
+        # Fallback: Try direct fetch with various languages  
+        print("  → Trying direct fetch...")
         for lang in PREFERRED_LANGUAGES:
             try:
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
+                fetched = ytt_api.fetch(video_id, languages=[lang])
+                transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                 transcript = ' '.join([entry['text'] for entry in transcript_data])
                 transcript = re.sub(r'\s+', ' ', transcript).strip()
                 
@@ -226,8 +233,11 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
     def try_extract_transcript():
         from youtube_transcript_api import YouTubeTranscriptApi
         
+        # v1.2.4+ requires instance, not class methods
+        ytt_api = YouTubeTranscriptApi()
+        
         # Single consolidated approach - get list of transcripts once
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript_list = ytt_api.list_transcripts(video_id)
         
         # Log available transcripts for debugging
         available_langs = []
@@ -242,7 +252,8 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
         for lang in PREFERRED_LANGUAGES:
             try:
                 transcript = transcript_list.find_transcript([lang])
-                transcript_data = transcript.fetch()
+                fetched = transcript.fetch()
+                transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                 print(f"  → Found transcript in: {lang}")
                 return transcript_data
             except Exception as e:
@@ -260,7 +271,8 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
         print("  → Trying any available transcript...")
         for transcript in transcript_list:
             try:
-                transcript_data = transcript.fetch()
+                fetched = transcript.fetch()
+                transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                 print(f"  → Using {transcript.language} ({transcript.language_code}) transcript")
                 return transcript_data
             except Exception as e:
@@ -277,7 +289,8 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
             if transcript.is_translatable:
                 try:
                     translated = transcript.translate('en')
-                    transcript_data = translated.fetch()
+                    fetched = translated.fetch()
+                    transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
                     print(f"  → Translated from {transcript.language_code} to English")
                     return transcript_data
                 except Exception as e:
