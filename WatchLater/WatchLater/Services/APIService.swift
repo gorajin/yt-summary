@@ -24,18 +24,26 @@ class APIService {
     static let shared = APIService()
     private init() {}
     
-    // MARK: - Summarize
+    // MARK: - Summarize (Async Polling Architecture)
     
     func summarize(url: String, transcript: String? = nil, authToken: String) async throws -> SummaryResponse {
+        // Step 1: Initiate job
+        let jobId = try await initiateJob(url: url, transcript: transcript, authToken: authToken)
+        
+        // Step 2: Poll for completion
+        return try await pollJobStatus(jobId: jobId, authToken: authToken)
+    }
+    
+    /// Initiate a summarization job and return job_id
+    private func initiateJob(url: String, transcript: String?, authToken: String) async throws -> String {
         let endpoint = URL(string: "\(APIConfig.baseURL)/summarize")!
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.timeoutInterval = APIConfig.summarizeTimeout
+        request.timeoutInterval = APIConfig.apiTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         
-        // Include transcript if available (bypasses server-side YouTube fetch)
         var bodyDict: [String: String] = ["url": url]
         if let transcript = transcript {
             bodyDict["transcript"] = transcript
@@ -56,9 +64,7 @@ class APIService {
             throw APIError.rateLimited
         }
         
-        // Handle all other HTTP errors before trying to decode
         if httpResponse.statusCode >= 400 {
-            // Try to extract error message from backend response
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let detail = json["detail"] as? String {
                 throw APIError.serverError(detail)
@@ -66,7 +72,66 @@ class APIService {
             throw APIError.serverError("Server error (\(httpResponse.statusCode))")
         }
         
-        return try JSONDecoder().decode(SummaryResponse.self, from: data)
+        // Parse job_id from 202 response
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let jobId = json["job_id"] as? String else {
+            throw APIError.serverError("Invalid job response")
+        }
+        
+        print("API: Job created: \(jobId.prefix(8))...")
+        return jobId
+    }
+    
+    /// Poll job status until complete or failed (max 2 minutes)
+    private func pollJobStatus(jobId: String, authToken: String, maxAttempts: Int = 60) async throws -> SummaryResponse {
+        let statusURL = URL(string: "\(APIConfig.baseURL)/status/\(jobId)")!
+        
+        for attempt in 1...maxAttempts {
+            var request = URLRequest(url: statusURL)
+            request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 10
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                try await Task.sleep(nanoseconds: 2_000_000_000)  // 2s
+                continue
+            }
+            
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let status = json["status"] as? String else {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                continue
+            }
+            
+            let progress = json["progress"] as? Int ?? 0
+            let stage = json["stage"] as? String ?? "Processing"
+            print("API: Poll \(attempt): \(status) \(progress)% - \(stage)")
+            
+            if status == "complete" {
+                if let result = json["result"] as? [String: Any] {
+                    return SummaryResponse(
+                        success: result["success"] as? Bool ?? true,
+                        title: result["title"] as? String,
+                        notionUrl: result["notionUrl"] as? String,
+                        error: nil,
+                        remaining: nil
+                    )
+                }
+                return SummaryResponse(success: true, title: "Summary saved!", notionUrl: nil, error: nil, remaining: nil)
+            }
+            
+            if status == "failed" {
+                let error = json["error"] as? String ?? "Processing failed"
+                return SummaryResponse(success: false, title: nil, notionUrl: nil, error: error, remaining: nil)
+            }
+            
+            // Wait 2 seconds before next poll
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        
+        throw APIError.serverError("Processing timed out. Please try again.")
     }
 
     

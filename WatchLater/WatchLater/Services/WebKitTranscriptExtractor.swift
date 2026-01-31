@@ -70,73 +70,78 @@ class WebKitTranscriptExtractor: NSObject, WKNavigationDelegate {
     }
     
     private func triggerCaptionExtraction() async {
-        // This JavaScript will:
-        // 1. Try to get captions from ytInitialPlayerResponse
-        // 2. Click the CC button to trigger botguard
-        // 3. Wait for the caption request and capture it
+        // This JavaScript extracts captions from the YouTube page.
+        // We use a simpler synchronous approach to avoid "unsupported type" errors.
+        // The script will:
+        // 1. Get ytInitialPlayerResponse from the page
+        // 2. Find caption tracks
+        // 3. Return the caption URL for us to fetch in Swift
         let extractionScript = """
-        (async () => {
-            // First, try to directly fetch the captions with the player's context
-            const player = document.querySelector('#movie_player');
-            if (!player) {
-                window.webkit.messageHandlers.captionHandler.postMessage({error: 'No player found'});
-                return;
-            }
-            
-            // Check current caption state and get tracks
-            if (window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.captions) {
-                const tracks = window.ytInitialPlayerResponse.captions.playerCaptionsTracklistRenderer.captionTracks;
-                if (tracks && tracks.length > 0) {
-                    const track = tracks[0];
-                    
-                    // Intercept XMLHttpRequest to capture the actual caption request
-                    let capturedUrl = null;
-                    const originalOpen = XMLHttpRequest.prototype.open;
-                    XMLHttpRequest.prototype.open = function() {
-                        if (arguments[1] && arguments[1].includes('timedtext') && arguments[1].includes('pot=')) {
-                            capturedUrl = arguments[1];
-                        }
-                        return originalOpen.apply(this, arguments);
-                    };
-                    
-                    // Click CC button to trigger caption loading
-                    const ccButton = document.querySelector('.ytp-subtitles-button');
-                    if (ccButton) {
-                        ccButton.click();
-                        
-                        // Wait for request to be made
-                        await new Promise(r => setTimeout(r, 2000));
-                        
-                        if (capturedUrl) {
-                            // Fetch the actual transcript
-                            try {
-                                const resp = await fetch(capturedUrl);
-                                const text = await resp.text();
-                                if (text.length > 0) {
-                                    window.webkit.messageHandlers.captionHandler.postMessage({
-                                        success: true, 
-                                        transcript: text,
-                                        url: capturedUrl
-                                    });
-                                    return;
-                                }
-                            } catch(e) {}
+        (function() {
+            // Get the player response (contains caption URLs)
+            var playerResponse = window.ytInitialPlayerResponse;
+            if (!playerResponse) {
+                // Try getting from ytplayer.config
+                try {
+                    if (window.ytplayer && window.ytplayer.config && window.ytplayer.config.args) {
+                        var args = window.ytplayer.config.args;
+                        if (args.player_response) {
+                            playerResponse = JSON.parse(args.player_response);
                         }
                     }
-                }
+                } catch(e) {}
             }
             
-            window.webkit.messageHandlers.captionHandler.postMessage({error: 'Could not extract captions'});
+            if (!playerResponse) {
+                window.webkit.messageHandlers.captionHandler.postMessage({error: 'No player response found'});
+                return null;
+            }
+            
+            // Check for captions
+            var captions = playerResponse.captions;
+            if (!captions || !captions.playerCaptionsTracklistRenderer) {
+                window.webkit.messageHandlers.captionHandler.postMessage({error: 'No captions available'});
+                return null;
+            }
+            
+            var tracks = captions.playerCaptionsTracklistRenderer.captionTracks;
+            if (!tracks || tracks.length === 0) {
+                window.webkit.messageHandlers.captionHandler.postMessage({error: 'No caption tracks'});
+                return null;
+            }
+            
+            // Get the first English or any track
+            var track = null;
+            for (var i = 0; i < tracks.length; i++) {
+                if (tracks[i].languageCode === 'en' || tracks[i].languageCode.startsWith('en')) {
+                    track = tracks[i];
+                    break;
+                }
+            }
+            if (!track) track = tracks[0];
+            
+            var baseUrl = track.baseUrl;
+            if (!baseUrl) {
+                window.webkit.messageHandlers.captionHandler.postMessage({error: 'No caption URL'});
+                return null;
+            }
+            
+            // Return caption URL for Swift to fetch
+            window.webkit.messageHandlers.captionHandler.postMessage({
+                captionUrl: baseUrl,
+                language: track.languageCode
+            });
+            return null;
         })();
         """
         
-        webView?.evaluateJavaScript(extractionScript) { _, error in
+        webView?.evaluateJavaScript(extractionScript) { [weak self] _, error in
             if let error = error {
                 print("📱 WebKit: JS error: \(error)")
-                // Timeout fallback
+                // Give message handler time to fire, or timeout
                 Task {
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    self.finishWithResult(nil)
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    self?.finishWithResult(nil)
                 }
             }
         }
@@ -183,14 +188,75 @@ extension WebKitTranscriptExtractor: WKScriptMessageHandler {
                 return
             }
             
+            // Case 1: Got a caption URL - fetch it using the WebView
+            if let captionUrl = body["captionUrl"] as? String {
+                let language = body["language"] as? String ?? "unknown"
+                print("📱 WebKit: Got caption URL for \(language), fetching...")
+                await fetchCaptionFromWebView(urlString: captionUrl)
+                return
+            }
+            
+            // Case 2: Got direct transcript (from older approach or direct extraction)
             if let transcript = body["transcript"] as? String, !transcript.isEmpty {
                 print("📱 WebKit: SUCCESS - Got \(transcript.count) chars")
                 finishWithResult(parseTranscript(transcript))
-            } else if let error = body["error"] as? String {
+                return
+            }
+            
+            // Case 3: Error
+            if let error = body["error"] as? String {
                 print("📱 WebKit: Error - \(error)")
                 finishWithResult(nil)
-            } else {
-                finishWithResult(nil)
+                return
+            }
+            
+            finishWithResult(nil)
+        }
+    }
+    
+    /// Fetch caption data using WebView's fetch (has proper session/cookies)
+    @MainActor
+    private func fetchCaptionFromWebView(urlString: String) async {
+        // Escape the URL for JavaScript
+        let escapedUrl = urlString.replacingOccurrences(of: "'", with: "\\'")
+        
+        // Add json3 format if not present
+        var fetchUrl = escapedUrl
+        if !fetchUrl.contains("fmt=") {
+            fetchUrl += "&fmt=json3"
+        }
+        
+        let fetchScript = """
+        (function() {
+            fetch('\(fetchUrl)')
+                .then(function(response) { return response.text(); })
+                .then(function(text) {
+                    if (text && text.length > 0) {
+                        window.webkit.messageHandlers.captionHandler.postMessage({
+                            transcript: text
+                        });
+                    } else {
+                        window.webkit.messageHandlers.captionHandler.postMessage({
+                            error: 'Empty response'
+                        });
+                    }
+                })
+                .catch(function(err) {
+                    window.webkit.messageHandlers.captionHandler.postMessage({
+                        error: 'Fetch failed: ' + err.message
+                    });
+                });
+            return null;
+        })();
+        """
+        
+        webView?.evaluateJavaScript(fetchScript) { [weak self] _, error in
+            if let error = error {
+                print("📱 WebKit: Fetch JS error: \(error)")
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    self?.finishWithResult(nil)
+                }
             }
         }
     }

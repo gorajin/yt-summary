@@ -21,6 +21,7 @@
 		C33333333333333333333331 /* StoreManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33333333333333333333332 /* StoreManager.swift */; };
 		C33333333333333333333333 /* PaywallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33333333333333333333334 /* PaywallView.swift */; };
 		C33333333333333333333335 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33333333333333333333336 /* HistoryView.swift */; };
+		D44444444444444444444441 /* WebKitTranscriptExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D44444444444444444444442 /* WebKitTranscriptExtractor.swift */; };
 		B22222222222222222222221 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22222222222222222222222 /* ShareViewController.swift */; };
 		B22222222222222222222224 /* WatchLaterShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B22222222222222222222220 /* WatchLaterShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B2222222222222222222222C /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2222222222222222222222D /* KeychainHelper.swift */; };
@@ -69,6 +70,7 @@
 		C33333333333333333333332 /* StoreManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreManager.swift; sourceTree = "<group>"; };
 		C33333333333333333333334 /* PaywallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallView.swift; sourceTree = "<group>"; };
 		C33333333333333333333336 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		D44444444444444444444442 /* WebKitTranscriptExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitTranscriptExtractor.swift; sourceTree = "<group>"; };
 		B2222222222222222222222D /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -132,6 +134,7 @@
 				A11111111111111111111123 /* HomeViewModel.swift */,
 				A11111111111111111111127 /* KeychainHelper.swift */,
 				C33333333333333333333332 /* StoreManager.swift */,
+				D44444444444444444444442 /* WebKitTranscriptExtractor.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -261,6 +264,7 @@
 				C33333333333333333333331 /* StoreManager.swift in Sources */,
 				C33333333333333333333333 /* PaywallView.swift in Sources */,
 				C33333333333333333333335 /* HistoryView.swift in Sources */,
+				D44444444444444444444441 /* WebKitTranscriptExtractor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
