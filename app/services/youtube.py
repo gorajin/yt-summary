@@ -124,9 +124,25 @@ def get_transcript(url: str) -> Tuple[str, str]:
         # v1.2.4+ requires instance, not class methods
         ytt_api = YouTubeTranscriptApi()
         
-        # Try using list_transcripts for better control
+        # Strategy 1: Try simple direct fetch first (most reliable)
+        print("  → Trying direct fetch...")
+        for lang in PREFERRED_LANGUAGES:
+            try:
+                fetched = ytt_api.fetch(video_id, languages=[lang])
+                transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else list(fetched)
+                transcript = ' '.join([entry['text'] if isinstance(entry, dict) else entry.text for entry in transcript_data])
+                transcript = re.sub(r'\s+', ' ', transcript).strip()
+                
+                title = get_video_title(video_id)
+                print(f"  → Got transcript in {lang} ({len(transcript)} chars)")
+                return transcript, title
+            except Exception as e:
+                print(f"  → fetch({lang}) failed: {type(e).__name__}")
+                continue
+        
+        # Strategy 2: List all transcripts and try each (v1.2.4 renamed list_transcripts to list)
         try:
-            transcript_list = ytt_api.list_transcripts(video_id)
+            transcript_list = ytt_api.list(video_id)  # Note: list() not list_transcripts()
             
             # Strategy 1: Try to find transcript in preferred languages
             transcript_data = None
@@ -179,22 +195,7 @@ def get_transcript(url: str) -> Tuple[str, str]:
                 return transcript, title
                 
         except Exception as list_err:
-            print(f"  → list_transcripts failed: {type(list_err).__name__}: {list_err}")
-        
-        # Fallback: Try direct fetch with various languages  
-        print("  → Trying direct fetch...")
-        for lang in PREFERRED_LANGUAGES:
-            try:
-                fetched = ytt_api.fetch(video_id, languages=[lang])
-                transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                transcript = ' '.join([entry['text'] for entry in transcript_data])
-                transcript = re.sub(r'\s+', ' ', transcript).strip()
-                
-                title = get_video_title(video_id)
-                print(f"  → Got transcript in {lang} ({len(transcript)} chars)")
-                return transcript, title
-            except Exception:
-                continue
+            print(f"  → list() failed: {type(list_err).__name__}: {list_err}")
         
         print("  → youtube-transcript-api could not get transcript, trying yt-dlp")
             
@@ -236,76 +237,69 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
         # v1.2.4+ requires instance, not class methods
         ytt_api = YouTubeTranscriptApi()
         
-        # Single consolidated approach - get list of transcripts once
-        transcript_list = ytt_api.list_transcripts(video_id)
-        
-        # Log available transcripts for debugging
-        available_langs = []
-        for t in transcript_list:
-            available_langs.append(f"{t.language_code}({'manual' if not t.is_generated else 'auto'})")
-        print(f"  → Available transcripts: {', '.join(available_langs) if available_langs else 'none'}")
-        
-        # Track the last "rate limit like" error to propagate for retry
-        last_rate_limit_error = None
-        
-        # Strategy 1: Preferred languages (English, Korean, etc.)
+        # Strategy 1: Simple direct fetch (most reliable in v1.2.4)
         for lang in PREFERRED_LANGUAGES:
             try:
-                transcript = transcript_list.find_transcript([lang])
-                fetched = transcript.fetch()
-                transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                print(f"  → Found transcript in: {lang}")
+                fetched = ytt_api.fetch(video_id, languages=[lang])
+                # Handle FetchedTranscript (v1.2.4) or raw list (older versions)
+                if hasattr(fetched, 'to_raw_data'):
+                    transcript_data = fetched.to_raw_data()
+                else:
+                    # Convert FetchedTranscriptSnippet objects to dicts
+                    transcript_data = [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched]
+                print(f"  → Got transcript via fetch() in {lang}")
                 return transcript_data
             except Exception as e:
                 err_str = str(e).lower()
-                err_type = type(e).__name__.lower()
-                # Track rate-limit-like errors for potential retry
-                if 'parseerror' in err_type or 'no element found' in err_str or 'youtuberequestfailed' in err_type:
-                    last_rate_limit_error = e
-                    print(f"  → Strategy 1 ({lang}): {type(e).__name__} (will retry)")
-                elif 'could not find' not in err_str and 'no transcript' not in err_str:
-                    print(f"  → Strategy 1 ({lang}): {type(e).__name__}")
+                if 'no transcript' not in err_str and 'could not find' not in err_str:
+                    print(f"  → fetch({lang}): {type(e).__name__}")
                 continue
         
-        # Strategy 2: Any available transcript (iterate through all)
-        print("  → Trying any available transcript...")
-        for transcript in transcript_list:
-            try:
-                fetched = transcript.fetch()
-                transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                print(f"  → Using {transcript.language} ({transcript.language_code}) transcript")
-                return transcript_data
-            except Exception as e:
-                err_type = type(e).__name__.lower()
-                err_str = str(e).lower()
-                if 'parseerror' in err_type or 'no element found' in err_str or 'youtuberequestfailed' in err_type:
-                    last_rate_limit_error = e
-                print(f"  → Failed to fetch {transcript.language_code}: {type(e).__name__}: {e}")
-                continue
-        
-        # Strategy 3: Translation to English
-        print("  → Trying translation to English...")
-        for transcript in transcript_list:
-            if transcript.is_translatable:
+        # Strategy 2: List all available and try each (v1.2.4: list() not list_transcripts())
+        try:
+            transcript_list = ytt_api.list(video_id)
+            
+            # Log available transcripts
+            available = [f"{t.language_code}({'manual' if not t.is_generated else 'auto'})" for t in transcript_list]
+            print(f"  → Available: {', '.join(available) if available else 'none'}")
+            
+            # Try preferred languages first
+            for lang in PREFERRED_LANGUAGES:
                 try:
-                    translated = transcript.translate('en')
-                    fetched = translated.fetch()
-                    transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                    print(f"  → Translated from {transcript.language_code} to English")
-                    return transcript_data
-                except Exception as e:
-                    err_type = type(e).__name__.lower()
-                    if 'parseerror' in err_type or 'youtuberequestfailed' in err_type:
-                        last_rate_limit_error = e
-                    print(f"  → Translation from {transcript.language_code} failed: {type(e).__name__}")
+                    transcript = transcript_list.find_transcript([lang])
+                    fetched = transcript.fetch()
+                    if hasattr(fetched, 'to_raw_data'):
+                        return fetched.to_raw_data()
+                    return [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched]
+                except Exception:
                     continue
+            
+            # Try any available transcript
+            for transcript in transcript_list:
+                try:
+                    fetched = transcript.fetch()
+                    if hasattr(fetched, 'to_raw_data'):
+                        return fetched.to_raw_data()
+                    return [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched]
+                except Exception as e:
+                    print(f"  → {transcript.language_code}: {type(e).__name__}")
+                    continue
+            
+            # Try translation to English
+            for transcript in transcript_list:
+                if transcript.is_translatable:
+                    try:
+                        translated = transcript.translate('en')
+                        fetched = translated.fetch()
+                        if hasattr(fetched, 'to_raw_data'):
+                            return fetched.to_raw_data()
+                        return [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched]
+                    except Exception:
+                        continue
+                        
+        except Exception as list_err:
+            print(f"  → list() failed: {type(list_err).__name__}: {list_err}")
         
-        # If we had a rate-limit-like error, raise it so retry logic can catch
-        if last_rate_limit_error:
-            print(f"  → All strategies failed with rate-limit-like error, propagating for retry")
-            raise last_rate_limit_error
-        
-        print("  → All transcript strategies failed")
         return None
     
     # Try with retry logic for 429 errors
