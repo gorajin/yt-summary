@@ -83,52 +83,84 @@ class APIService {
     }
     
     /// Poll job status until complete or failed (max 2 minutes)
-    private func pollJobStatus(jobId: String, authToken: String, maxAttempts: Int = 60) async throws -> SummaryResponse {
+    /// Resilient to network timeouts - will retry on transient errors
+    private func pollJobStatus(jobId: String, authToken: String, maxAttempts: Int = 40) async throws -> SummaryResponse {
         let statusURL = URL(string: "\(APIConfig.baseURL)/status/\(jobId)")!
+        var consecutiveNetworkErrors = 0
+        let maxNetworkRetries = 5
         
         for attempt in 1...maxAttempts {
             var request = URLRequest(url: statusURL)
             request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 10
+            request.timeoutInterval = 15  // Increased from 10
             
-            let (data, response) = try await URLSession.shared.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                try await Task.sleep(nanoseconds: 2_000_000_000)  // 2s
-                continue
-            }
-            
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let status = json["status"] as? String else {
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-                continue
-            }
-            
-            let progress = json["progress"] as? Int ?? 0
-            let stage = json["stage"] as? String ?? "Processing"
-            print("API: Poll \(attempt): \(status) \(progress)% - \(stage)")
-            
-            if status == "complete" {
-                if let result = json["result"] as? [String: Any] {
-                    return SummaryResponse(
-                        success: result["success"] as? Bool ?? true,
-                        title: result["title"] as? String,
-                        notionUrl: result["notionUrl"] as? String,
-                        error: nil,
-                        remaining: nil
-                    )
+            // Wrap in do-catch to handle network errors gracefully
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                consecutiveNetworkErrors = 0  // Reset on success
+                
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
                 }
-                return SummaryResponse(success: true, title: "Summary saved!", notionUrl: nil, error: nil, remaining: nil)
+                
+                if httpResponse.statusCode == 401 {
+                    throw APIError.unauthorized
+                }
+                
+                if httpResponse.statusCode != 200 {
+                    print("API: Poll \(attempt): HTTP \(httpResponse.statusCode)")
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let status = json["status"] as? String else {
+                    print("API: Poll \(attempt): Invalid JSON response")
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                
+                let progress = json["progress"] as? Int ?? 0
+                let stage = json["stage"] as? String ?? "Processing"
+                print("API: Poll \(attempt): \(status) \(progress)% - \(stage)")
+                
+                if status == "complete" {
+                    if let result = json["result"] as? [String: Any] {
+                        return SummaryResponse(
+                            success: result["success"] as? Bool ?? true,
+                            title: result["title"] as? String,
+                            notionUrl: result["notionUrl"] as? String,
+                            error: nil,
+                            remaining: nil
+                        )
+                    }
+                    return SummaryResponse(success: true, title: "Summary saved!", notionUrl: nil, error: nil, remaining: nil)
+                }
+                
+                if status == "failed" {
+                    let error = json["error"] as? String ?? "Processing failed"
+                    return SummaryResponse(success: false, title: nil, notionUrl: nil, error: error, remaining: nil)
+                }
+                
+                // Wait 3 seconds before next poll
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+                
+            } catch {
+                // Network error (timeout, connection refused, etc.)
+                consecutiveNetworkErrors += 1
+                print("API: Poll \(attempt): Network error (\(consecutiveNetworkErrors)/\(maxNetworkRetries)) - \(error.localizedDescription)")
+                
+                if consecutiveNetworkErrors >= maxNetworkRetries {
+                    // Too many consecutive network errors - give up
+                    throw APIError.networkError(error)
+                }
+                
+                // Wait with exponential backoff before retry
+                let backoffSeconds = UInt64(min(pow(2.0, Double(consecutiveNetworkErrors)), 8.0))
+                try await Task.sleep(nanoseconds: backoffSeconds * 1_000_000_000)
+                continue
             }
-            
-            if status == "failed" {
-                let error = json["error"] as? String ?? "Processing failed"
-                return SummaryResponse(success: false, title: nil, notionUrl: nil, error: error, remaining: nil)
-            }
-            
-            // Wait 2 seconds before next poll
-            try await Task.sleep(nanoseconds: 2_000_000_000)
         }
         
         throw APIError.serverError("Processing timed out. Please try again.")
