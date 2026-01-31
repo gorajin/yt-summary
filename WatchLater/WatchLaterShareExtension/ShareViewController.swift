@@ -110,19 +110,18 @@ class ShareViewController: UIViewController {
         
         Task {
             do {
-                // Fetch transcript client-side (bypasses YouTube IP blocking)
-                let transcript = await fetchTranscript(for: url)
+                // Try client-side transcript extraction first (bypasses YouTube IP blocking)
+                var transcript = await fetchTranscript(for: url)
                 
-                // Transcript is now required
-                guard let transcript = transcript, !transcript.isEmpty else {
-                    await MainActor.run {
-                        self.showError("Could not get transcript. This video may not have captions enabled.")
-                    }
-                    return
+                // If client-side fails, we'll pass empty string and let server try
+                // Server has youtube-transcript-api v1.2.4 which often works from different IPs
+                if transcript == nil || transcript!.isEmpty {
+                    print("📱 Share: Client-side transcript failed, will try server fallback")
+                    transcript = ""  // Empty string triggers server-side extraction
                 }
                 
                 // Initiate job and get jobId (async polling architecture)
-                let jobId = try await initiateJobWithTokenRefresh(url: url, token: token, transcript: transcript)
+                let jobId = try await initiateJobWithTokenRefresh(url: url, token: token, transcript: transcript ?? "")
                 
                 // Poll for completion
                 let result = try await pollJobStatus(jobId: jobId, token: token)
