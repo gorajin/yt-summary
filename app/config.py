@@ -31,8 +31,9 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 # ============ Constants ============
 
-# Free tier limits
+# Tier limits
 FREE_TIER_LIMIT = 10
+ADMIN_TIER_LIMIT = 100
 
 # Preferred transcript languages (shared across all extraction methods)
 PREFERRED_LANGUAGES = [

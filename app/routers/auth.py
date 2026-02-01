@@ -25,6 +25,7 @@ from ..config import (
     NOTION_CLIENT_SECRET,
     NOTION_REDIRECT_URI,
     FREE_TIER_LIMIT,
+    ADMIN_TIER_LIMIT,
 )
 from ..models import UserProfile
 
@@ -109,6 +110,9 @@ def check_rate_limit(user: dict) -> int:
     if tier in ["pro", "lifetime"]:
         return -1  # Unlimited
     
+    # Admin tier gets higher limit
+    limit = ADMIN_TIER_LIMIT if tier == "admin" else FREE_TIER_LIMIT
+    
     # Check if we need to reset (new month)
     user_id = user.get("id")
     reset_at = user.get("summaries_reset_at")
@@ -127,12 +131,12 @@ def check_rate_limit(user: dict) -> int:
                     "summaries_this_month": 0,
                     "summaries_reset_at": now.isoformat()
                 }).eq("id", user_id).execute()
-                return FREE_TIER_LIMIT
+                return limit
         except Exception as e:
             print(f"  ⚠ Usage reset check failed: {e}")
     
     used = user.get("summaries_this_month", 0)
-    remaining = FREE_TIER_LIMIT - used
+    remaining = limit - used
     
     if remaining <= 0:
         raise HTTPException(
@@ -339,7 +343,8 @@ async def get_profile(user: dict = Depends(get_current_user)):
     """Get current user profile."""
     tier = user.get("subscription_tier", "free")
     used = user.get("summaries_this_month", 0)
-    remaining = -1 if tier in ["pro", "lifetime"] else max(0, FREE_TIER_LIMIT - used)
+    limit = ADMIN_TIER_LIMIT if tier == "admin" else FREE_TIER_LIMIT
+    remaining = -1 if tier in ["pro", "lifetime"] else max(0, limit - used)
     
     return UserProfile(
         id=user["id"],
