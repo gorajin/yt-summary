@@ -350,19 +350,24 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
                 "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": str(question)}}]}
             })
     
-    # Notion has a limit of 100 blocks per request - truncate if needed
-    if len(children) > 100:
-        children = children[:99]
-        children.append({
-            "object": "block",
-            "type": "callout",
-            "callout": {
-                "rich_text": [{"type": "text", "text": {"content": "Notes truncated due to length. View the video for complete content."}}],
-                "icon": {"emoji": "⚠️"},
-                "color": "gray_background"
-            }
-        })
+    # Notion has a limit of 100 blocks per API request
+    # For long videos, we need to create the page with initial blocks,
+    # then append additional blocks in subsequent requests
+    BATCH_SIZE = 100
     
+    # Split children into batches
+    first_batch = children[:BATCH_SIZE]
+    remaining_batches = [
+        children[i:i + BATCH_SIZE] 
+        for i in range(BATCH_SIZE, len(children), BATCH_SIZE)
+    ]
+    
+    # Log if we have multiple batches
+    total_blocks = len(children)
+    if remaining_batches:
+        print(f"  → Notion: {total_blocks} blocks, splitting into {1 + len(remaining_batches)} batches")
+    
+    # Create page with first batch
     response = notion.pages.create(
         parent={"database_id": database_id},
         properties={
@@ -370,7 +375,44 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
             "URL": {"url": video_url},
             "Date Added": {"date": {"start": date.today().isoformat()}}
         },
-        children=children
+        children=first_batch
     )
     
-    return response["url"]
+    page_id = response["id"]
+    page_url = response["url"]
+    
+    # Append remaining batches if any
+    if remaining_batches:
+        appended_blocks = len(first_batch)
+        for batch_num, batch in enumerate(remaining_batches, start=2):
+            try:
+                notion.blocks.children.append(
+                    block_id=page_id,
+                    children=batch
+                )
+                appended_blocks += len(batch)
+                print(f"  → Notion: Appended batch {batch_num}/{1 + len(remaining_batches)} ({len(batch)} blocks)")
+            except Exception as e:
+                # Log error but don't crash - page exists with partial content
+                print(f"  → Notion: Failed to append batch {batch_num}: {type(e).__name__}: {e}")
+                # Add a note that content was truncated
+                try:
+                    notion.blocks.children.append(
+                        block_id=page_id,
+                        children=[{
+                            "object": "block",
+                            "type": "callout",
+                            "callout": {
+                                "rich_text": [{"type": "text", "text": {"content": f"Note: Some content could not be saved ({total_blocks - appended_blocks} blocks). View the video for complete content."}}],
+                                "icon": {"emoji": "⚠️"},
+                                "color": "gray_background"
+                            }
+                        }]
+                    )
+                except Exception:
+                    pass  # Best effort - don't fail if we can't add the warning
+                break  # Stop trying additional batches after a failure
+        
+        print(f"  → Notion: Successfully saved {appended_blocks}/{total_blocks} blocks")
+    
+    return page_url
