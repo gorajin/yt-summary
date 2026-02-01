@@ -82,17 +82,17 @@ class APIService {
         return jobId
     }
     
-    /// Poll job status until complete or failed (max 2 minutes)
-    /// Resilient to network timeouts - will retry on transient errors
-    private func pollJobStatus(jobId: String, authToken: String, maxAttempts: Int = 40) async throws -> SummaryResponse {
+    /// Poll job status until complete or failed (max 4 minutes)
+    /// Resilient to network timeouts - long videos (4+ hours) may need 2-3 min server processing
+    private func pollJobStatus(jobId: String, authToken: String, maxAttempts: Int = 80) async throws -> SummaryResponse {
         let statusURL = URL(string: "\(APIConfig.baseURL)/status/\(jobId)")!
         var consecutiveNetworkErrors = 0
-        let maxNetworkRetries = 5
+        let maxNetworkRetries = 15  // More tolerant of transient network issues
         
         for attempt in 1...maxAttempts {
             var request = URLRequest(url: statusURL)
             request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 15  // Increased from 10
+            request.timeoutInterval = 30  // Generous timeout for Railway cold starts
             
             // Wrap in do-catch to handle network errors gracefully
             do {

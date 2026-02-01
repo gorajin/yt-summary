@@ -223,61 +223,84 @@ class ShareViewController: UIViewController {
     
     /// Poll job status until complete or failed
     /// Extended timeout (180 attempts × 2s = 6 min) to handle long video chunked processing
+    /// Resilient to network timeouts - long videos may need 2-3 min server processing
     private func pollJobStatus(jobId: String, token: String, maxAttempts: Int = 180) async throws -> SummarizeResult {
         let statusURL = URL(string: "https://watchlater.up.railway.app/status/\(jobId)")!
+        var consecutiveNetworkErrors = 0
+        let maxNetworkRetries = 15  // Very tolerant - long videos need time
         
         for attempt in 1...maxAttempts {
             var request = URLRequest(url: statusURL)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 10
+            request.timeoutInterval = 30  // Generous timeout for slow network/Railway
             
-            let (data, response) = try await URLSession.shared.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                try await Task.sleep(nanoseconds: 2_000_000_000)  // 2s
-                continue
-            }
-            
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let status = json["status"] as? String,
-                  let progress = json["progress"] as? Int else {
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-                continue
-            }
-            
-            let stage = json["stage"] as? String ?? "Processing"
-            print("📱 Share: Poll \(attempt): \(status) \(progress)% - \(stage)")
-            
-            // Update UI progress based on real server progress
-            await MainActor.run {
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("UpdateServerProgress"),
-                    object: nil,
-                    userInfo: ["progress": progress, "stage": stage]
-                )
-            }
-            
-            if status == "complete" {
-                if let result = json["result"] as? [String: Any] {
-                    return SummarizeResult(
-                        success: result["success"] as? Bool ?? true,
-                        title: result["title"] as? String,
-                        notionUrl: result["notionUrl"] as? String,
-                        error: nil,
-                        remaining: nil
+            // Wrap in do-catch to handle network timeouts gracefully
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                consecutiveNetworkErrors = 0  // Reset on success
+                
+                guard let httpResponse = response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200 else {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)  // 2s
+                    continue
+                }
+                
+                guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let status = json["status"] as? String,
+                      let progress = json["progress"] as? Int else {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    continue
+                }
+                
+                let stage = json["stage"] as? String ?? "Processing"
+                print("📱 Share: Poll \(attempt): \(status) \(progress)% - \(stage)")
+                
+                // Update UI progress based on real server progress
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("UpdateServerProgress"),
+                        object: nil,
+                        userInfo: ["progress": progress, "stage": stage]
                     )
                 }
-                return SummarizeResult(success: true, title: "Summary saved!", notionUrl: nil, error: nil, remaining: nil)
+                
+                if status == "complete" {
+                    if let result = json["result"] as? [String: Any] {
+                        return SummarizeResult(
+                            success: result["success"] as? Bool ?? true,
+                            title: result["title"] as? String,
+                            notionUrl: result["notionUrl"] as? String,
+                            error: nil,
+                            remaining: nil
+                        )
+                    }
+                    return SummarizeResult(success: true, title: "Summary saved!", notionUrl: nil, error: nil, remaining: nil)
+                }
+                
+                if status == "failed" {
+                    let error = json["error"] as? String ?? "Processing failed"
+                    return SummarizeResult(success: false, title: nil, notionUrl: nil, error: error, remaining: nil)
+                }
+                
+                // Wait 2 seconds before next poll
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                
+            } catch {
+                // Network error (timeout, connection refused, etc.)
+                consecutiveNetworkErrors += 1
+                print("📱 Share: Poll \(attempt): Network error (\(consecutiveNetworkErrors)/\(maxNetworkRetries)) - \(error.localizedDescription)")
+                
+                if consecutiveNetworkErrors >= maxNetworkRetries {
+                    // Too many consecutive network errors - give up
+                    throw NSError(domain: "WatchLater", code: -1001,
+                        userInfo: [NSLocalizedDescriptionKey: "Network connection issues. Please check your internet and try again."])
+                }
+                
+                // Wait with exponential backoff before retry (max 8s)
+                let backoffSeconds = UInt64(min(pow(2.0, Double(consecutiveNetworkErrors)), 8.0))
+                try await Task.sleep(nanoseconds: backoffSeconds * 1_000_000_000)
+                continue
             }
-            
-            if status == "failed" {
-                let error = json["error"] as? String ?? "Processing failed"
-                return SummarizeResult(success: false, title: nil, notionUrl: nil, error: error, remaining: nil)
-            }
-            
-            // Wait 2 seconds before next poll
-            try await Task.sleep(nanoseconds: 2_000_000_000)
         }
         
         throw NSError(domain: "WatchLater", code: 0,
