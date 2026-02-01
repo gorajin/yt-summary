@@ -34,14 +34,22 @@ def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
     - HTTP 429 Too Many Requests
     - ParseError (returns empty XML response)
     - YouTubeRequestFailed
+    - 0-byte response with 200 OK (PoToken enforcement in 2026+)
     """
     last_error = None
+    empty_response_count = 0
+    
     for attempt in range(max_retries):
         try:
             result = func()
-            # Also check if result is None on first attempt (might be a silent failure)
-            if result is None and attempt == 0:
-                print(f"  → Got empty result, waiting {base_delay}s before retry...")
+            # Check for empty/None results which may indicate PoToken enforcement
+            if result is None or (isinstance(result, (list, str)) and len(result) == 0):
+                empty_response_count += 1
+                if empty_response_count >= 2:
+                    # Multiple empty responses likely means PoToken enforcement, not rate limit
+                    print(f"  → Multiple empty responses detected - likely PoToken enforcement")
+                    raise Exception("Video requires authentication token (PoToken) that cannot be generated server-side.")
+                print(f"  → Got empty result (attempt {attempt + 1}), waiting {base_delay}s before retry...")
                 time.sleep(base_delay)
                 continue
             return result
@@ -59,7 +67,18 @@ def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
                 'youtuberequestfailed' in error_type.lower()  # Generic YouTube block
             )
             
-            if is_rate_limit:
+            # Check if it's a PoToken enforcement issue
+            is_potoken = (
+                'potoken' in error_str or
+                'pot=' in error_str or
+                'authentication token' in error_str
+            )
+            
+            if is_potoken:
+                # Don't retry PoToken issues - they won't resolve
+                print(f"  → PoToken enforcement detected, server-side extraction not possible")
+                raise
+            elif is_rate_limit:
                 wait_time = base_delay * (2 ** attempt)  # exponential: 2, 4, 8 or 3, 6, 12 etc
                 print(f"  → YouTube blocking detected ({error_type}), waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}")
                 time.sleep(wait_time)

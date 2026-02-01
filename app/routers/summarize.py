@@ -46,6 +46,14 @@ def get_friendly_error(error: str) -> str:
     if "rate limit" in error_lower or "too many requests" in error_lower:
         return "Too many requests. Please wait a moment and try again."
     
+    # PoToken enforcement (YouTube 2026+)
+    if "potoken" in error_lower or "authentication token" in error_lower:
+        return "This video has restricted captions that require additional verification. Please try a different video."
+    
+    # Multiple empty responses = PoToken enforcement
+    if "multiple empty responses" in error_lower:
+        return "This video's captions are protected. Please try a different video."
+    
     if len(error) > 100:
         return "Something went wrong. Please try a different video."
     
@@ -70,13 +78,21 @@ async def process_summarization_job(
         # Stage 1: Transcript (0-25%)
         await update_job(job_id, status=JobStatus.PROCESSING, progress=5, stage="Fetching transcript")
         
-        if transcript:
+        # Check for client extraction failure signal
+        # "__SERVER_EXTRACT__" means client tried and failed (likely PoToken enforcement)
+        client_extraction_failed = transcript == "__SERVER_EXTRACT__"
+        
+        if transcript and not client_extraction_failed:
             print(f"  [Job {job_id[:8]}] Using client-provided transcript...")
             segments = [TranscriptSegment(text=transcript, start_time=0, end_time=0)]
             video_title = None
             await update_job(job_id, progress=25, stage="Transcript received")
         else:
-            # Server-side extraction (deprecated path)
+            # Server-side extraction (fallback when client fails due to PoToken/IP blocking)
+            if client_extraction_failed:
+                print(f"  [Job {job_id[:8]}] Client extraction failed (PoToken), attempting server-side...")
+            else:
+                print(f"  [Job {job_id[:8]}] No transcript provided, fetching server-side...")
             print(f"  [Job {job_id[:8]}] Fetching timestamped transcript (server-side)...")
             segments, transcript, video_title = get_transcript_with_timestamps(url)
             await update_job(job_id, progress=25, stage="Transcript extracted")

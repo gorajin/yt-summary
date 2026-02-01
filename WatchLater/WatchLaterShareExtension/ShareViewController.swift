@@ -113,11 +113,20 @@ class ShareViewController: UIViewController {
                 // Try client-side transcript extraction first (bypasses YouTube IP blocking)
                 var transcript = await fetchTranscript(for: url)
                 
-                // If client-side fails, we'll pass empty string and let server try
-                // Server has youtube-transcript-api v1.2.4 which often works from different IPs
+                // If client-side fails, signal server to attempt extraction
+                // Server has youtube-transcript-api which may succeed from different IPs
                 if transcript == nil || transcript!.isEmpty {
-                    print("📱 Share: Client-side transcript failed, will try server fallback")
-                    transcript = ""  // Empty string triggers server-side extraction
+                    print("📱 Share: Client-side transcript failed (likely PoToken enforcement), requesting server extraction")
+                    // Special flag tells server "client tried and failed, please extract"
+                    transcript = "__SERVER_EXTRACT__"
+                    
+                    // Notify UI that we're using server fallback (may take longer)
+                    await MainActor.run {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("ServerFallbackMode"),
+                            object: nil
+                        )
+                    }
                 }
                 
                 // Initiate job and get jobId (async polling architecture)
@@ -213,7 +222,8 @@ class ShareViewController: UIViewController {
     }
     
     /// Poll job status until complete or failed
-    private func pollJobStatus(jobId: String, token: String, maxAttempts: Int = 120) async throws -> SummarizeResult {
+    /// Extended timeout (180 attempts × 2s = 6 min) to handle long video chunked processing
+    private func pollJobStatus(jobId: String, token: String, maxAttempts: Int = 180) async throws -> SummarizeResult {
         let statusURL = URL(string: "https://watchlater.up.railway.app/status/\(jobId)")!
         
         for attempt in 1...maxAttempts {
@@ -271,7 +281,7 @@ class ShareViewController: UIViewController {
         }
         
         throw NSError(domain: "WatchLater", code: 0,
-            userInfo: [NSLocalizedDescriptionKey: "Processing timed out. Please try again."])
+            userInfo: [NSLocalizedDescriptionKey: "Processing timed out. This may happen with videos that have restricted captions. Please try a different video."])
     }
     
     /// Refresh an expired access token using Supabase
