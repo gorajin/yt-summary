@@ -53,7 +53,7 @@ struct HistoryView: View {
             .onSubmit(of: .search) {
                 Task { await loadHistory() }
             }
-            .onChange(of: searchText) { newValue in
+            .onChange(of: searchText) { _, newValue in
                 if newValue.isEmpty {
                     Task { await loadHistory() }
                 }
@@ -126,21 +126,9 @@ struct SummaryRow: View {
     let summary: SummaryHistoryItem
     var onRetry: (() -> Void)? = nil
     
-    /// Extract video ID for thumbnail
+    /// Extract video ID for thumbnail (uses shared logic)
     private var videoId: String? {
-        let patterns = [
-            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})"#,
-            #"(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})"#
-        ]
-        
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.firstMatch(in: summary.youtubeUrl, range: NSRange(summary.youtubeUrl.startIndex..., in: summary.youtubeUrl)),
-               let range = Range(match.range(at: 1), in: summary.youtubeUrl) {
-                return String(summary.youtubeUrl[range])
-            }
-        }
-        return nil
+        TranscriptExtractor.extractVideoId(from: summary.youtubeUrl)
     }
     
     private var thumbnailURL: URL? {
