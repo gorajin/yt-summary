@@ -6,6 +6,7 @@ Jobs are created immediately and processed in the background.
 """
 
 import asyncio
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
@@ -17,6 +18,7 @@ from ..services.notion import create_lecture_notes_page
 from ..services.jobs import create_job, update_job, JobStatus
 from .auth import get_current_user, check_rate_limit, increment_usage, supabase
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["summarize"])
 
@@ -83,35 +85,33 @@ async def process_summarization_job(
         client_extraction_failed = transcript == "__SERVER_EXTRACT__"
         
         if transcript and not client_extraction_failed:
-            print(f"  [Job {job_id[:8]}] Using client-provided transcript...")
+            logger.info(f"Job {job_id[:8]}: Using client-provided transcript")
             segments = [TranscriptSegment(text=transcript, start_time=0, end_time=0)]
             video_title = None
             await update_job(job_id, progress=25, stage="Transcript received")
         else:
-            # Server-side extraction (fallback when client fails due to PoToken/IP blocking)
             if client_extraction_failed:
-                print(f"  [Job {job_id[:8]}] Client extraction failed (PoToken), attempting server-side...")
+                logger.info(f"Job {job_id[:8]}: Client extraction failed, attempting server-side")
             else:
-                print(f"  [Job {job_id[:8]}] No transcript provided, fetching server-side...")
-            print(f"  [Job {job_id[:8]}] Fetching timestamped transcript (server-side)...")
+                logger.info(f"Job {job_id[:8]}: No transcript provided, fetching server-side")
             segments, transcript, video_title = get_transcript_with_timestamps(url)
             await update_job(job_id, progress=25, stage="Transcript extracted")
         
-        print(f"  [Job {job_id[:8]}] Got {len(segments)} segments ({len(transcript)} chars)")
+        logger.info(f"Job {job_id[:8]}: Got {len(segments)} segments ({len(transcript)} chars)")
         
         # Stage 2: Analysis (25-50%)
         await update_job(job_id, progress=30, stage="Analyzing content")
         
         # Stage 3: Summarization (50-85%) - longest stage
         await update_job(job_id, progress=50, stage="Generating summary")
-        print(f"  [Job {job_id[:8]}] Generating lecture notes...")
+        logger.info(f"Job {job_id[:8]}: Generating lecture notes")
         notes = process_long_transcript(segments, video_title, video_id)
         await update_job(job_id, progress=85, stage="Summary complete")
-        print(f"  [Job {job_id[:8]}] Generated: {notes.title}")
+        logger.info(f"Job {job_id[:8]}: Generated: {notes.title}")
         
         # Stage 4: Notion (85-100%)
         await update_job(job_id, progress=90, stage="Saving to Notion")
-        print(f"  [Job {job_id[:8]}] Creating Notion page...")
+        logger.info(f"Job {job_id[:8]}: Creating Notion page")
         notion_url = create_lecture_notes_page(
             notion_token=notion_token,
             database_id=database_id,
@@ -124,7 +124,7 @@ async def process_summarization_job(
         try:
             increment_usage(user["id"])
         except Exception as usage_err:
-            print(f"  [Job {job_id[:8]}] ⚠ Usage increment failed: {usage_err}")
+            logger.warning(f"Job {job_id[:8]}: Usage increment failed: {usage_err}")
         
         # Log summary (non-critical)
         try:
@@ -135,7 +135,7 @@ async def process_summarization_job(
                 "notion_url": notion_url
             }).execute()
         except Exception as log_err:
-            print(f"  [Job {job_id[:8]}] ⚠ Summary logging failed: {log_err}")
+            logger.warning(f"Job {job_id[:8]}: Summary logging failed: {log_err}")
         
         # Complete!
         await update_job(
@@ -149,11 +149,11 @@ async def process_summarization_job(
                 "notionUrl": notion_url
             }
         )
-        print(f"  [Job {job_id[:8]}] ✓ Done → {notion_url}")
+        logger.info(f"Job {job_id[:8]}: Complete → {notion_url}")
         
     except Exception as e:
         error_msg = str(e)
-        print(f"  [Job {job_id[:8]}] ✗ Error: {error_msg}")
+        logger.error(f"Job {job_id[:8]}: Failed: {error_msg}")
         friendly_error = get_friendly_error(error_msg)
         await update_job(
             job_id,
@@ -196,7 +196,7 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
         
         # Create job
         job = await create_job(user["id"], body.url)
-        print(f"Created job {job.id[:8]} for user {user['id']}: {body.url}")
+        logger.info(f"Created job {job.id[:8]} for user {user['id']}: {body.url}")
         
         # Spawn background task
         asyncio.create_task(
@@ -224,14 +224,5 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
         raise
     except Exception as e:
         error_msg = str(e)
-        print(f"  ✗ Error creating job: {error_msg}")
+        logger.error(f"Error creating job: {error_msg}")
         raise HTTPException(status_code=500, detail=get_friendly_error(error_msg))
-
-
-@router.post("/summarize/legacy")
-async def summarize_legacy(body: SummarizeRequest):
-    """Legacy summarize endpoint - DEPRECATED. Use authenticated /summarize instead."""
-    raise HTTPException(
-        status_code=410, 
-        detail="This endpoint has been deprecated. Please use the WatchLater iOS app with authentication."
-    )

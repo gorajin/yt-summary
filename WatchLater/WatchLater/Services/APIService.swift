@@ -1,22 +1,8 @@
 import Foundation
 import Combine
 
-// MARK: - API Configuration
-
-enum APIConfig {
-    static let baseURL = "https://watchlater.up.railway.app"
-    static let supabaseURL = "https://lnmlpwcntttemnisoxrf.supabase.co"
-    static let supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxubWxwd2NudHR0ZW1uaXNveHJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgxNjgxNjksImV4cCI6MjA4Mzc0NDE2OX0.onowpihNxyb_Z2JSxGuwLdVb_HF2NWmePN-9UW1fBJY"
-    
-    // Google OAuth
-    static let googleClientID = "3801364532-kuk4v6v9949dl9d3lcosnbm5h19qj203.apps.googleusercontent.com"
-    static let bundleID = "com.watchlater.app"
-    static let redirectURL = "\(supabaseURL)/auth/v1/callback"
-    
-    // Timeouts
-    static let apiTimeout: TimeInterval = 30
-    static let summarizeTimeout: TimeInterval = 120
-}
+// NOTE: All configuration is centralized in Config.swift (AppConfig enum)
+// which is shared between the main app and Share Extension.
 
 // MARK: - API Service
 
@@ -36,11 +22,11 @@ class APIService {
     
     /// Initiate a summarization job and return job_id
     private func initiateJob(url: String, transcript: String?, authToken: String) async throws -> String {
-        let endpoint = URL(string: "\(APIConfig.baseURL)/summarize")!
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summarize")!
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.timeoutInterval = APIConfig.apiTimeout
+        request.timeoutInterval = AppConfig.apiTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         
@@ -85,7 +71,7 @@ class APIService {
     /// Poll job status until complete or failed (max 4 minutes)
     /// Resilient to network timeouts - long videos (4+ hours) may need 2-3 min server processing
     private func pollJobStatus(jobId: String, authToken: String, maxAttempts: Int = 80) async throws -> SummaryResponse {
-        let statusURL = URL(string: "\(APIConfig.baseURL)/status/\(jobId)")!
+        let statusURL = URL(string: "\(AppConfig.apiBaseURL)/status/\(jobId)")!
         var consecutiveNetworkErrors = 0
         let maxNetworkRetries = 15  // More tolerant of transient network issues
         
@@ -170,10 +156,10 @@ class APIService {
     // MARK: - Get User Profile
     
     func getProfile(authToken: String) async throws -> User {
-        let endpoint = URL(string: "\(APIConfig.baseURL)/me")!
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/me")!
         
         var request = URLRequest(url: endpoint)
-        request.timeoutInterval = APIConfig.apiTimeout
+        request.timeoutInterval = AppConfig.apiTimeout
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -198,7 +184,7 @@ class APIService {
     // MARK: - Start Notion OAuth
     
     func getNotionAuthURL(userId: String) async throws -> URL {
-        let endpoint = URL(string: "\(APIConfig.baseURL)/auth/notion?user_id=\(userId)")!
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/auth/notion?user_id=\(userId)")!
         
         let (data, _) = try await URLSession.shared.data(from: endpoint)
         

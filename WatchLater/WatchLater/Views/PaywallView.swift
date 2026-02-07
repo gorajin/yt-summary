@@ -147,7 +147,7 @@ struct PaywallView: View {
     private var termsSection: some View {
         VStack(spacing: 4) {
             Text("Subscription auto-renews unless cancelled at least 24 hours before the end of the current period.")
-            Text("[Privacy Policy](https://watchlater.app/privacy) • [Terms of Use](https://watchlater.app/terms)")
+            Text("[Privacy Policy](https://gorajin.github.io/yt-summary/privacy.html) • [Terms of Use](https://gorajin.github.io/yt-summary/terms.html)")
         }
         .font(.caption2)
         .foregroundStyle(.secondary)

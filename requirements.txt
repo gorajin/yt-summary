@@ -7,4 +7,3 @@ supabase==2.10.0
 youtube-transcript-api>=1.2.4
 slowapi==0.1.9
 limits==3.7.0
-pytest==8.0.0

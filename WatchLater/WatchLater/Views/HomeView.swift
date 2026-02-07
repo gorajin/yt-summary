@@ -2,26 +2,15 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject var authManager: AuthManager
+    @EnvironmentObject var storeManager: StoreManager
     @StateObject private var viewModel = HomeViewModel()
     @State private var urlInput = ""
     @State private var showingSettings = false
+    @State private var showingPaywall = false
     
-    /// Extract video ID from YouTube URL
+    /// Extract video ID using shared logic (no more duplication)
     private var videoId: String? {
-        let patterns = [
-            #"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})"#,
-            #"(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})"#
-        ]
-
-        
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.firstMatch(in: urlInput, range: NSRange(urlInput.startIndex..., in: urlInput)),
-               let range = Range(match.range(at: 1), in: urlInput) {
-                return String(urlInput[range])
-            }
-        }
-        return nil
+        TranscriptExtractor.extractVideoId(from: urlInput)
     }
     
     /// YouTube thumbnail URL
@@ -167,14 +156,36 @@ struct HomeView: View {
                         .padding(.horizontal)
                     }
                     
-                    // Usage Stats
+                    // Usage Stats + Upgrade Prompt
                     if let remaining = viewModel.summariesRemaining {
                         HStack {
                             Image(systemName: "chart.bar.fill")
-                            Text(remaining < 0 ? "Unlimited summaries" : "\(remaining) summaries remaining this month")
+                            if remaining < 0 {
+                                Text("Unlimited summaries")
+                            } else if remaining <= 2 && remaining > 0 {
+                                Text("⚠️ Only \(remaining) summar\(remaining == 1 ? "y" : "ies") left this month")
+                                    .foregroundStyle(.orange)
+                            } else {
+                                Text("\(remaining) summaries remaining this month")
+                            }
+                            
+                            // Show upgrade button for free users running low
+                            if remaining >= 0 && !storeManager.isPro {
+                                Spacer()
+                                Button("Upgrade") {
+                                    showingPaywall = true
+                                }
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(.orange)
+                                .clipShape(Capsule())
+                            }
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal)
                     }
                     
                     Spacer()
@@ -191,6 +202,16 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
+            }
+            .sheet(isPresented: $showingPaywall) {
+                PaywallView()
+            }
+            // Auto-present paywall when quota is exceeded (Fix #1)
+            .onChange(of: viewModel.quotaExceeded) { _, exceeded in
+                if exceeded {
+                    showingPaywall = true
+                    viewModel.quotaExceeded = false  // Reset for next time
+                }
             }
             .onAppear {
                 // Refresh token first on appear, then load profile
@@ -333,8 +354,19 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section("About") {
+                    HStack {
+                        Text("Version")
+                        Spacer()
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                
                 Section {
-                    Link("Privacy Policy", destination: URL(string: "https://watchlater.app/privacy")!)
+                    Link("Privacy Policy", destination: URL(string: "https://gorajin.github.io/yt-summary/privacy.html")!)
+                        .foregroundStyle(.primary)
+                    Link("Terms of Use", destination: URL(string: "https://gorajin.github.io/yt-summary/terms.html")!)
                         .foregroundStyle(.primary)
                 }
                 

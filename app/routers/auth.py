@@ -4,11 +4,12 @@ Authentication and user management router.
 Provides endpoints for:
 - Notion OAuth flow
 - User profile retrieval
-- Debug token validation
+- Subscription sync
 """
 
 import json
 import base64
+import logging
 import secrets
 import urllib.request
 from typing import Optional
@@ -16,6 +17,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Depends, Header
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from notion_client import Client as NotionClient
 
 from ..config import (
@@ -26,8 +28,11 @@ from ..config import (
     NOTION_REDIRECT_URI,
     FREE_TIER_LIMIT,
     ADMIN_TIER_LIMIT,
+    DEVELOPER_USER_IDS,
 )
 from ..models import UserProfile
+
+logger = logging.getLogger(__name__)
 
 # Initialize Supabase
 from supabase import create_client, Client as SupabaseClient
@@ -49,42 +54,39 @@ router = APIRouter(tags=["auth"])
 async def get_current_user(authorization: Optional[str] = Header(None)):
     """Verify JWT and return user from Supabase."""
     if not authorization:
-        print("AUTH ERROR: No authorization header")
         raise HTTPException(status_code=401, detail="Authorization header required")
     
     if not authorization.startswith("Bearer "):
-        print(f"AUTH ERROR: Invalid format - expected 'Bearer <token>'")
         raise HTTPException(status_code=401, detail="Invalid authorization format")
     
     token = authorization.replace("Bearer ", "")
-    token_length_category = "short" if len(token) < 100 else "medium" if len(token) < 500 else "long"
-    print(f"AUTH: Validating {token_length_category} token ({len(token)} chars)")
     
     try:
         # Verify token with Supabase
         user_response = supabase.auth.get_user(token)
         if not user_response.user:
-            print("AUTH ERROR: get_user returned no user")
             raise HTTPException(status_code=401, detail="Invalid token")
         
-        print(f"AUTH: Token valid for user {user_response.user.id}")
+        user_id = user_response.user.id
+        logger.debug(f"Token valid for user {user_id}")
         
         # Get user profile from our users table
-        user_id = user_response.user.id
-        
         try:
             result = supabase.table("users").select("*").eq("id", user_id).execute()
             existing_users = result.data if result.data else []
         except Exception as e:
-            print(f"AUTH: Error fetching user: {e}")
+            logger.error(f"Error fetching user profile: {e}")
             existing_users = []
         
         if existing_users and len(existing_users) > 0:
-            print(f"AUTH: Found existing user profile for {user_id}")
-            return existing_users[0]
+            user = existing_users[0]
+            # Apply developer override if applicable
+            if user_id in DEVELOPER_USER_IDS and user.get("subscription_tier") == "free":
+                user["subscription_tier"] = "admin"
+            return user
         
         # Create user profile if doesn't exist
-        print(f"AUTH: Creating new user profile for {user_id}")
+        logger.info(f"Creating new user profile for {user_id}")
         new_user = {
             "id": user_id,
             "email": user_response.user.email,
@@ -97,7 +99,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"AUTH ERROR: Exception during validation: {type(e).__name__}: {str(e)}")
+        logger.error(f"Auth validation failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
@@ -125,15 +127,16 @@ def check_rate_limit(user: dict) -> int:
             
             now = datetime.now(reset_date.tzinfo) if reset_date.tzinfo else datetime.now()
             
-            if reset_date.year < now.year or reset_date.month < now.month:
-                print(f"  → Resetting monthly usage for user {user_id} (last reset: {reset_date})")
+            # Robust month comparison (handles year rollover)
+            if (now.year, now.month) > (reset_date.year, reset_date.month):
+                logger.info(f"Resetting monthly usage for user {user_id}")
                 supabase.table("users").update({
                     "summaries_this_month": 0,
                     "summaries_reset_at": now.isoformat()
                 }).eq("id", user_id).execute()
                 return limit
         except Exception as e:
-            print(f"  ⚠ Usage reset check failed: {e}")
+            logger.warning(f"Usage reset check failed: {e}")
     
     used = user.get("summaries_this_month", 0)
     remaining = limit - used
@@ -154,37 +157,54 @@ def increment_usage(user_id: str):
 
 # ============ Endpoints ============
 
-@router.get("/debug/token")
-async def debug_token(authorization: Optional[str] = Header(None)):
-    """Debug endpoint to test token validation."""
-    result = {
-        "has_authorization": authorization is not None,
-        "has_supabase": supabase is not None,
-        "supabase_url": SUPABASE_URL[:30] + "..." if SUPABASE_URL else None,
+
+class SubscriptionSyncRequest(BaseModel):
+    """Request to sync a StoreKit subscription with the backend."""
+    product_id: str
+    original_transaction_id: Optional[str] = None
+
+
+@router.post("/subscription/sync")
+async def sync_subscription(
+    body: SubscriptionSyncRequest,
+    user: dict = Depends(get_current_user)
+):
+    """Sync a StoreKit 2 subscription with the backend.
+    
+    Called by the iOS app after a successful purchase or on app launch
+    when an active subscription is detected.
+    
+    For launch: trusts the client-verified transaction.
+    Future: validate with Apple's App Store Server API.
+    """
+    user_id = user["id"]
+    product_id = body.product_id
+    
+    # Map Apple product IDs to subscription tiers
+    PRO_PRODUCT_IDS = {
+        "com.watchlater.app.pro.monthly",
+        "com.watchlater.app.pro.yearly",
     }
     
-    if not authorization:
-        result["error"] = "No authorization header"
-        return result
+    if product_id not in PRO_PRODUCT_IDS:
+        raise HTTPException(status_code=400, detail=f"Unknown product: {product_id}")
     
-    if not authorization.startswith("Bearer "):
-        result["error"] = "Invalid authorization format"
-        return result
-    
-    token = authorization.replace("Bearer ", "")
-    result["token_length"] = len(token)
-    result["token_prefix"] = token[:30] + "..."
-    
+    # Update user's subscription tier
     try:
-        user_response = supabase.auth.get_user(token)
-        result["user_id"] = user_response.user.id if user_response.user else None
-        result["user_email"] = user_response.user.email if user_response.user else None
-        result["valid"] = user_response.user is not None
+        supabase.table("users").update({
+            "subscription_tier": "pro",
+        }).eq("id", user_id).execute()
+        
+        logger.info(f"Subscription synced: user={user_id}, product={product_id}")
+        
+        return {
+            "success": True,
+            "subscription_tier": "pro",
+            "message": "Subscription activated successfully"
+        }
     except Exception as e:
-        result["error"] = f"{type(e).__name__}: {str(e)}"
-        result["valid"] = False
-    
-    return result
+        logger.error(f"Subscription sync failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to sync subscription")
 
 
 @router.get("/auth/notion")
@@ -211,16 +231,12 @@ async def notion_auth_start(user_id: str):
 async def notion_auth_callback(code: str, state: str):
     """Handle Notion OAuth callback."""
     try:
-        if not NOTION_CLIENT_SECRET:
-            print("ERROR: NOTION_CLIENT_SECRET not configured")
-            return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=server_not_configured")
-        
-        if not NOTION_CLIENT_ID:
-            print("ERROR: NOTION_CLIENT_ID not configured")
-            return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=server_not_configured")
+        if not NOTION_CLIENT_SECRET or not NOTION_CLIENT_ID:
+            logger.error("Notion OAuth not configured")
+            return RedirectResponse(url="watchlater://notion-connected?success=false&error=server_not_configured")
         
         user_id = state.split(":")[0]
-        print(f"Notion OAuth callback for user: {user_id}")
+        logger.info(f"Notion OAuth callback for user: {user_id}")
         
         token_url = "https://api.notion.com/v1/oauth/token"
         credentials = base64.b64encode(f"{NOTION_CLIENT_ID}:{NOTION_CLIENT_SECRET}".encode()).decode()
@@ -230,8 +246,6 @@ async def notion_auth_callback(code: str, state: str):
             "code": code,
             "redirect_uri": NOTION_REDIRECT_URI
         }
-        
-        print(f"Exchanging code for token with redirect_uri: {NOTION_REDIRECT_URI}")
         
         req = urllib.request.Request(
             token_url,
@@ -248,18 +262,18 @@ async def notion_auth_callback(code: str, state: str):
                 token_data = json.loads(response.read().decode('utf-8'))
         except urllib.error.HTTPError as e:
             error_body = e.read().decode('utf-8')
-            print(f"Notion token exchange failed: {e.code} - {error_body}")
-            return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=token_exchange_failed")
+            logger.error(f"Notion token exchange failed: {e.code} - {error_body}")
+            return RedirectResponse(url="watchlater://notion-connected?success=false&error=token_exchange_failed")
         
         access_token = token_data.get("access_token")
         workspace_name = token_data.get("workspace_name")
-        print(f"Got Notion token for workspace: {workspace_name}")
+        logger.info(f"Got Notion token for workspace: {workspace_name}")
         
         notion = NotionClient(auth=access_token)
         search_results = notion.search(filter={"property": "object", "value": "database"}).get("results", [])
         
         database_id = None
-        first_database_id = None  # Fallback to any database
+        first_database_id = None
         
         for db in search_results:
             if not first_database_id:
@@ -268,31 +282,23 @@ async def notion_auth_callback(code: str, state: str):
             title = db.get("title", [{}])[0].get("plain_text", "")
             title_lower = title.lower()
             
-            # Match common database names for video/learning content
             keywords = ["youtube", "watch", "summary", "video", "notes", "learning", "lecture", "content"]
             if any(kw in title_lower for kw in keywords):
                 database_id = db["id"]
-                print(f"Found matching database: {title} ({database_id})")
+                logger.info(f"Found matching database: {title} ({database_id})")
                 break
         
-        # Fallback: use first available database if no keyword match
         if not database_id and first_database_id:
-            print(f"No keyword match - using first available database: {first_database_id}")
+            logger.info(f"No keyword match - using first available database: {first_database_id}")
             database_id = first_database_id
         
-        # If no databases at all, try to create one
         if not database_id:
-            print("No databases found - attempting to create 'YouTube Summaries' database...")
+            logger.info("No databases found - attempting to create 'YouTube Summaries' database")
             try:
-                # Search for pages we can use as parent
                 page_results = notion.search(filter={"property": "object", "value": "page"}).get("results", [])
                 
                 if page_results:
-                    # Use the first page as parent
                     parent_page_id = page_results[0]["id"]
-                    print(f"Using page {parent_page_id} as parent for new database")
-                    
-                    # Create a database with the required schema
                     new_db = notion.databases.create(
                         parent={"type": "page_id", "page_id": parent_page_id},
                         title=[{"type": "text", "text": {"content": "YouTube Summaries"}}],
@@ -314,12 +320,12 @@ async def notion_auth_callback(code: str, state: str):
                         }
                     )
                     database_id = new_db["id"]
-                    print(f"✓ Created new database: YouTube Summaries ({database_id})")
+                    logger.info(f"Created new database: YouTube Summaries ({database_id})")
                 else:
-                    print("No pages found to use as parent - user needs to share a page first")
+                    logger.warning("No pages found to use as parent")
                     
             except Exception as db_create_err:
-                print(f"Failed to create database: {db_create_err}")
+                logger.error(f"Failed to create database: {db_create_err}")
         
         supabase.table("users").update({
             "notion_access_token": access_token,
@@ -327,15 +333,13 @@ async def notion_auth_callback(code: str, state: str):
             "notion_workspace": workspace_name
         }).eq("id", user_id).execute()
         
-        print(f"✓ Notion connected for user {user_id}")
+        logger.info(f"Notion connected for user {user_id}")
         
-        return RedirectResponse(url=f"watchlater://notion-connected?success=true")
+        return RedirectResponse(url="watchlater://notion-connected?success=true")
         
     except Exception as e:
-        print(f"Notion OAuth callback error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return RedirectResponse(url=f"watchlater://notion-connected?success=false&error=unknown")
+        logger.error(f"Notion OAuth callback error: {e}", exc_info=True)
+        return RedirectResponse(url="watchlater://notion-connected?success=false&error=unknown")
 
 
 @router.get("/me")

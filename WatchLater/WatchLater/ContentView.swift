@@ -1,12 +1,15 @@
 import SwiftUI
 
+// MARK: - Main Tab Container (Fix #2: HistoryView is now reachable)
+
 struct ContentView: View {
     @EnvironmentObject var authManager: AuthManager
+    @EnvironmentObject var storeManager: StoreManager
     
     var body: some View {
         Group {
             if authManager.isAuthenticated {
-                HomeView()
+                MainTabView()
             } else {
                 AuthView()
             }
@@ -15,7 +18,28 @@ struct ContentView: View {
     }
 }
 
+/// Tab bar with Home + History
+struct MainTabView: View {
+    @EnvironmentObject var storeManager: StoreManager
+    
+    var body: some View {
+        TabView {
+            HomeView()
+                .tabItem {
+                    Label("Home", systemImage: "house.fill")
+                }
+            
+            HistoryView()
+                .tabItem {
+                    Label("History", systemImage: "clock.fill")
+                }
+        }
+        .tint(.red)
+    }
+}
+
 #Preview {
     ContentView()
         .environmentObject(AuthManager())
+        .environmentObject(StoreManager())
 }

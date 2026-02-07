@@ -5,6 +5,7 @@ Centralized configuration for environment variables and constants.
 """
 
 import os
+import logging
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -29,11 +30,17 @@ NOTION_REDIRECT_URI = os.getenv("NOTION_REDIRECT_URI", "https://watchlater.up.ra
 # CORS
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
+# Logging
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 # ============ Constants ============
 
 # Tier limits
 FREE_TIER_LIMIT = 10
 ADMIN_TIER_LIMIT = 100
+
+# Developer overrides (user IDs that get admin-tier limits)
+DEVELOPER_USER_IDS = os.getenv("DEVELOPER_USER_IDS", "").split(",")
 
 # Preferred transcript languages (shared across all extraction methods)
 PREFERRED_LANGUAGES = [
@@ -43,6 +50,21 @@ PREFERRED_LANGUAGES = [
     'zh-Hans', 'zh-Hant',     # Chinese
     'es', 'fr', 'de', 'pt'    # European languages
 ]
+
+
+# ============ Logging Setup ============
+
+def setup_logging():
+    """Configure structured logging for the application."""
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    # Quiet noisy libraries
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 # ============ Startup Validation ============

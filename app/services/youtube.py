@@ -92,8 +92,10 @@ def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
 
 def extract_video_id(url: str) -> Optional[str]:
     """Extract video ID from various YouTube URL formats."""
+    if not url:
+        return None
     patterns = [
-        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})',
         r'(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
     ]
     for pattern in patterns:

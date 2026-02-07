@@ -6,6 +6,7 @@ struct HistoryView: View {
     @State private var summaries: [SummaryHistoryItem] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var searchText = ""
     
     var body: some View {
         NavigationStack {
@@ -29,16 +30,18 @@ struct HistoryView: View {
                         Image(systemName: "doc.text.magnifyingglass")
                             .font(.system(size: 48))
                             .foregroundStyle(.secondary)
-                        Text("No summaries yet")
+                        Text(searchText.isEmpty ? "No summaries yet" : "No results found")
                             .font(.headline)
-                        Text("Share a YouTube video to get started")
+                        Text(searchText.isEmpty ? "Share a YouTube video to get started" : "Try a different search term")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                     .padding()
                 } else {
                     List(summaries) { summary in
-                        SummaryRow(summary: summary)
+                        SummaryRow(summary: summary, onRetry: {
+                            retrySummary(summary)
+                        })
                     }
                     .refreshable {
                         await loadHistory()
@@ -46,6 +49,15 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("History")
+            .searchable(text: $searchText, prompt: "Search summaries")
+            .onSubmit(of: .search) {
+                Task { await loadHistory() }
+            }
+            .onChange(of: searchText) { newValue in
+                if newValue.isEmpty {
+                    Task { await loadHistory() }
+                }
+            }
             .onAppear {
                 Task { await loadHistory() }
             }
@@ -63,7 +75,7 @@ struct HistoryView: View {
         }
         
         do {
-            summaries = try await fetchSummaries(token: token)
+            summaries = try await fetchSummaries(token: token, query: searchText.isEmpty ? nil : searchText)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -71,11 +83,19 @@ struct HistoryView: View {
         isLoading = false
     }
     
-    private func fetchSummaries(token: String) async throws -> [SummaryHistoryItem] {
-        let endpoint = URL(string: "\(APIConfig.baseURL)/summaries")!
+    private func fetchSummaries(token: String, query: String? = nil) async throws -> [SummaryHistoryItem] {
+        var urlString = "\(AppConfig.apiBaseURL)/summaries"
+        
+        // Add search query if present
+        if let query = query, !query.isEmpty {
+            let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+            urlString += "?q=\(encoded)"
+        }
+        
+        let endpoint = URL(string: urlString)!
         
         var request = URLRequest(url: endpoint)
-        request.timeoutInterval = APIConfig.apiTimeout
+        request.timeoutInterval = AppConfig.apiTimeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -87,12 +107,24 @@ struct HistoryView: View {
         
         return try JSONDecoder().decode([SummaryHistoryItem].self, from: data)
     }
+    
+    private func retrySummary(_ summary: SummaryHistoryItem) {
+        // Copy URL to clipboard and switch to home tab for re-summarization
+        UIPasteboard.general.string = summary.youtubeUrl
+        // Post notification to trigger summarization from HomeView
+        NotificationCenter.default.post(
+            name: NSNotification.Name("RetrySummary"),
+            object: nil,
+            userInfo: ["url": summary.youtubeUrl]
+        )
+    }
 }
 
 // MARK: - Summary Row
 
 struct SummaryRow: View {
     let summary: SummaryHistoryItem
+    var onRetry: (() -> Void)? = nil
     
     /// Extract video ID for thumbnail
     private var videoId: String? {
@@ -117,7 +149,6 @@ struct SummaryRow: View {
     }
     
     private var formattedDate: String {
-        // Parse ISO 8601 date
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         
@@ -163,12 +194,18 @@ struct SummaryRow: View {
             
             Spacer()
             
-            // Open in Notion
+            // Open in Notion or Retry
             if let notionUrl = summary.notionUrl,
                let url = URL(string: notionUrl) {
                 Link(destination: url) {
                     Image(systemName: "arrow.up.forward.square")
                         .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+            } else if let onRetry = onRetry {
+                Button(action: onRetry) {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
             }

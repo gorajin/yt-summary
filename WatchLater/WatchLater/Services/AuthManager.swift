@@ -26,12 +26,12 @@ class AuthManager: ObservableObject {
     // MARK: - Sign Up
     
     func signUp(email: String, password: String) async throws {
-        let url = URL(string: "\(APIConfig.supabaseURL)/auth/v1/signup")!
+        let url = URL(string: "\(AppConfig.supabaseURL)/auth/v1/signup")!
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(APIConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.setValue(AppConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
         
         let body = ["email": email, "password": password]
         request.httpBody = try JSONEncoder().encode(body)
@@ -59,12 +59,12 @@ class AuthManager: ObservableObject {
     // MARK: - Sign In
     
     func signIn(email: String, password: String) async throws {
-        let url = URL(string: "\(APIConfig.supabaseURL)/auth/v1/token?grant_type=password")!
+        let url = URL(string: "\(AppConfig.supabaseURL)/auth/v1/token?grant_type=password")!
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(APIConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.setValue(AppConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
         
         let body = ["email": email, "password": password]
         request.httpBody = try JSONEncoder().encode(body)
@@ -133,11 +133,11 @@ class AuthManager: ObservableObject {
     
     /// Fetches user info from Supabase using access token
     private func fetchUserInfo(token: String) async throws -> SupabaseUser {
-        let url = URL(string: "\(APIConfig.supabaseURL)/auth/v1/user")!
+        let url = URL(string: "\(AppConfig.supabaseURL)/auth/v1/user")!
         
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue(APIConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.setValue(AppConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
         
         let (data, _) = try await URLSession.shared.data(for: request)
         return try JSONDecoder().decode(SupabaseUser.self, from: data)
@@ -207,12 +207,12 @@ class AuthManager: ObservableObject {
         }
         
         do {
-            let url = URL(string: "\(APIConfig.supabaseURL)/auth/v1/token?grant_type=refresh_token")!
+            let url = URL(string: "\(AppConfig.supabaseURL)/auth/v1/token?grant_type=refresh_token")!
             
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue(APIConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+            request.setValue(AppConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
             
             let body = ["refresh_token": refreshToken]
             request.httpBody = try JSONEncoder().encode(body)

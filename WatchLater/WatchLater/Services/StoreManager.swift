@@ -188,9 +188,44 @@ class StoreManager: ObservableObject {
     }
     
     private func syncSubscriptionWithBackend(productID: String) async {
-        // TODO: Call backend to update user's subscription_tier
-        // This ensures the backend knows about the subscription
-        print("StoreKit: Should sync \(productID) with backend")
+        // Get auth token from shared keychain
+        guard let token = KeychainHelper.shared.read(key: AppConfig.KeychainKeys.accessToken) else {
+            print("StoreKit: No auth token for backend sync")
+            return
+        }
+        
+        guard let url = URL(string: "\(AppConfig.apiBaseURL)/subscription/sync") else { return }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        // Get original transaction ID if available
+        var bodyDict: [String: String] = ["product_id": productID]
+        for await result in Transaction.currentEntitlements {
+            if case .verified(let transaction) = result,
+               transaction.productID == productID {
+                bodyDict["original_transaction_id"] = String(transaction.originalID)
+                break
+            }
+        }
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
+            let (_, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                if httpResponse.statusCode == 200 {
+                    print("StoreKit: Backend sync successful for \(productID)")
+                } else {
+                    print("StoreKit: Backend sync failed with status \(httpResponse.statusCode)")
+                }
+            }
+        } catch {
+            print("StoreKit: Backend sync error: \(error.localizedDescription)")
+        }
     }
 }
 
