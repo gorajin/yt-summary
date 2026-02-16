@@ -66,9 +66,8 @@ async def get_summaries(
     try:
         query = (
             supabase.table("summaries")
-            .select("id, youtube_url, video_id, title, overview, content_type, source_type, source_url, notion_url, created_at")
+            .select("id, youtube_url, title, notion_url, created_at")
             .eq("user_id", user["id"])
-            .is_("deleted_at", "null")
         )
         
         # Apply search filter
@@ -103,10 +102,9 @@ async def get_summary_detail(
     try:
         result = (
             supabase.table("summaries")
-            .select("id, youtube_url, video_id, title, overview, content_type, source_type, source_url, summary_json, notion_url, created_at")
+            .select("id, youtube_url, title, notion_url, created_at")
             .eq("id", summary_id)
             .eq("user_id", user["id"])
-            .is_("deleted_at", "null")
             .execute()
         )
         
@@ -138,10 +136,9 @@ async def export_summary_endpoint(
         # Fetch the full summary
         result = (
             supabase.table("summaries")
-            .select("id, youtube_url, video_id, title, overview, content_type, source_type, source_url, summary_json, notion_url, created_at")
+            .select("id, youtube_url, title, notion_url, created_at")
             .eq("id", summary_id)
             .eq("user_id", user["id"])
-            .is_("deleted_at", "null")
             .execute()
         )
         

@@ -60,11 +60,22 @@ async def build_map(request: Request, user: dict = Depends(get_current_user)):
     Creates an async job (same pattern as /summarize) and returns
     a job_id for polling via /status/{job_id}.
     """
+    import uuid
     user_id = user["id"]
     
-    # Create a job for tracking
-    job = await create_job(user_id=user_id)
-    job_id = job.id
+    # Create a job for tracking (without youtube_url since this isn't a video job)
+    job_id = str(uuid.uuid4())
+    try:
+        supabase.table("jobs").insert({
+            "id": job_id,
+            "user_id": user_id,
+            "youtube_url": "knowledge-map-build",
+            "status": "pending",
+            "progress": 0,
+            "stage": "queued",
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Job creation failed: {e}")
     
     # Run the build in the background
     asyncio.create_task(_build_map_job(job_id, user_id, user))

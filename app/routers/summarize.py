@@ -137,13 +137,8 @@ async def process_summarization_job(
             summary_data = {
                 "user_id": user["id"],
                 "youtube_url": url,
-                "video_id": video_id,
                 "title": notes.title,
-                "overview": notes.overview,
-                "content_type": notes.content_type.value,
-                "summary_json": notes.to_dict(),
                 "notion_url": notion_url,
-                "source_type": "youtube",
             }
             result = supabase.table("summaries").insert(summary_data).execute()
             if result.data:
@@ -286,15 +281,9 @@ async def process_ingest_job(
         try:
             summary_data = {
                 "user_id": user["id"],
-                "youtube_url": url,  # Reusing column for any source URL
-                "video_id": None,
+                "youtube_url": url,
                 "title": notes.title,
-                "overview": notes.overview,
-                "content_type": notes.content_type.value,
-                "summary_json": notes.to_dict(),
                 "notion_url": notion_url,
-                "source_type": detected_type.value,
-                "source_url": url,
             }
             result = supabase.table("summaries").insert(summary_data).execute()
             if result.data:

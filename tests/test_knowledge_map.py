@@ -184,57 +184,49 @@ class TestKnowledgeMap:
 # ============ Condensation Logic ============
 
 class TestCondenseSummary:
-    def test_condense_full_summary(self):
+    def test_condense_with_youtube_url(self):
         from app.services.knowledge_map import _condense_summary
 
         summary = {
-            "video_id": "abc123",
+            "youtube_url": "https://www.youtube.com/watch?v=abc123&si=xyz",
             "title": "React Deep Dive",
-            "overview": "A comprehensive look at React",
-            "content_type": "tutorial",
-            "summary_json": {
-                "title": "React Deep Dive",
-                "overview": "A comprehensive look at React",
-                "keyInsights": [
-                    {"insight": "RSC reduce bundles", "timestamp": "2:15"},
-                    {"insight": "Hydration is expensive", "timestamp": "5:00"},
-                    {"insight": "Streaming SSR helps", "timestamp": "8:30"},
-                    {"insight": "This should be cut", "timestamp": "12:00"},
-                ],
-                "mainConcepts": [
-                    {"concept": "Server Components"},
-                    {"concept": "Hydration"},
-                ],
-            },
         }
 
         result = _condense_summary(summary)
 
         assert result["videoId"] == "abc123"
         assert result["title"] == "React Deep Dive"
-        assert result["overview"] == "A comprehensive look at React"
-        assert len(result["keyInsights"]) == 3  # capped at 3
-        assert len(result["mainConcepts"]) == 2
-        assert result["keyInsights"][0] == "RSC reduce bundles"
+        assert result["youtubeUrl"] == summary["youtube_url"]
+
+    def test_condense_short_url(self):
+        from app.services.knowledge_map import _condense_summary
+
+        summary = {
+            "youtube_url": "https://youtu.be/def456?si=abc",
+            "title": "Short URL Video",
+        }
+
+        result = _condense_summary(summary)
+
+        assert result["videoId"] == "def456"
+        assert result["title"] == "Short URL Video"
 
     def test_condense_minimal_summary(self):
         from app.services.knowledge_map import _condense_summary
 
-        summary = {"video_id": "xyz", "summary_json": {}}
+        summary = {"youtube_url": "", "title": None}
 
         result = _condense_summary(summary)
 
-        assert result["videoId"] == "xyz"
+        assert result["videoId"] == ""
         assert result["title"] == "Untitled"
-        assert result["keyInsights"] == []
-        assert result["mainConcepts"] == []
 
-    def test_condense_no_summary_json(self):
+    def test_condense_no_fields(self):
         from app.services.knowledge_map import _condense_summary
 
-        summary = {"video_id": "no_json", "title": "Has Title"}
+        summary = {}
 
         result = _condense_summary(summary)
 
-        assert result["title"] == "Has Title"
-        assert result["keyInsights"] == []
+        assert result["title"] == "Untitled"
+        assert result["videoId"] == ""

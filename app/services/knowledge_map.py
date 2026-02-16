@@ -36,34 +36,21 @@ def _get_supabase():
 def _condense_summary(summary: dict) -> dict:
     """Extract the essential fields from a summary for the knowledge map prompt.
     
-    Keeps the input compact to stay within Gemini's context window,
-    even with 100+ summaries.
+    Works with the actual summaries table schema:
+    id, youtube_url, title, notion_url, created_at
     """
-    sj = summary.get("summary_json") or {}
-    
-    # Get top 3 insights (most valuable signal per summary)
-    insights = []
-    for ki in (sj.get("keyInsights") or [])[:3]:
-        if isinstance(ki, dict):
-            insights.append(ki.get("insight", ""))
-        else:
-            insights.append(str(ki))
-    
-    # Get concept names
-    concepts = []
-    for mc in (sj.get("mainConcepts") or [])[:5]:
-        if isinstance(mc, dict):
-            concepts.append(mc.get("concept", ""))
-        else:
-            concepts.append(str(mc))
+    # Extract video ID from youtube_url if possible
+    video_id = ""
+    yt_url = summary.get("youtube_url", "")
+    if "v=" in yt_url:
+        video_id = yt_url.split("v=")[1].split("&")[0]
+    elif "youtu.be/" in yt_url:
+        video_id = yt_url.split("youtu.be/")[1].split("?")[0]
     
     return {
-        "videoId": summary.get("video_id", ""),
-        "title": summary.get("title") or sj.get("title", "Untitled"),
-        "overview": summary.get("overview") or sj.get("overview", ""),
-        "contentType": summary.get("content_type") or sj.get("contentType", "general"),
-        "keyInsights": [i for i in insights if i],
-        "mainConcepts": [c for c in concepts if c],
+        "videoId": video_id,
+        "title": summary.get("title") or "Untitled",
+        "youtubeUrl": yt_url,
     }
 
 
@@ -149,8 +136,8 @@ async def build_knowledge_map(user_id: str, supabase_client=None) -> KnowledgeMa
     # Fetch all summaries for this user
     logger.info(f"Building knowledge map for user {user_id}")
     result = client.table("summaries").select(
-        "id, video_id, title, overview, content_type, summary_json"
-    ).eq("user_id", user_id).is_("deleted_at", "null").order(
+        "id, youtube_url, title, notion_url, created_at"
+    ).eq("user_id", user_id).order(
         "created_at", desc=True
     ).execute()
     
@@ -336,7 +323,7 @@ async def get_knowledge_map(user_id: str, supabase_client=None) -> Optional[dict
         # Check staleness: count current summaries
         count_result = client.table("summaries").select(
             "id", count="exact"
-        ).eq("user_id", user_id).is_("deleted_at", "null").execute()
+        ).eq("user_id", user_id).execute()
         
         current_count = count_result.count if hasattr(count_result, "count") else len(count_result.data or [])
         
