@@ -31,6 +31,8 @@
 		C33333333333333333333333 /* PaywallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33333333333333333333334 /* PaywallView.swift */; };
 		C33333333333333333333335 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33333333333333333333336 /* HistoryView.swift */; };
 		D44444444444444444444441 /* WebKitTranscriptExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D44444444444444444444442 /* WebKitTranscriptExtractor.swift */; };
+		E55555555555555555555551 /* KnowledgeMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E55555555555555555555552 /* KnowledgeMapView.swift */; };
+		E55555555555555555555553 /* TopicGraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E55555555555555555555554 /* TopicGraphView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -81,6 +83,8 @@
 		C33333333333333333333334 /* PaywallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaywallView.swift; sourceTree = "<group>"; };
 		C33333333333333333333336 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		D44444444444444444444442 /* WebKitTranscriptExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitTranscriptExtractor.swift; sourceTree = "<group>"; };
+		E55555555555555555555552 /* KnowledgeMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnowledgeMapView.swift; sourceTree = "<group>"; };
+		E55555555555555555555554 /* TopicGraphView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopicGraphView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -135,6 +139,8 @@
 				A1111111111111111111111A /* HomeView.swift */,
 				C33333333333333333333334 /* PaywallView.swift */,
 				C33333333333333333333336 /* HistoryView.swift */,
+				E55555555555555555555552 /* KnowledgeMapView.swift */,
+				E55555555555555555555554 /* TopicGraphView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -290,6 +296,8 @@
 				5321A93E2F36CF3F009BA86A /* Config.swift in Sources */,
 				C33333333333333333333335 /* HistoryView.swift in Sources */,
 				D44444444444444444444441 /* WebKitTranscriptExtractor.swift in Sources */,
+				E55555555555555555555551 /* KnowledgeMapView.swift in Sources */,
+				E55555555555555555555553 /* TopicGraphView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

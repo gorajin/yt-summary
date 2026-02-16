@@ -135,7 +135,7 @@ class StoreManager: ObservableObject {
     
     func updatePurchasedProducts() async {
         var purchased: Set<String> = []
-        var jwsRepresentations: [String: String] = []  // productID → JWS
+        var jwsRepresentations: [String: String] = [:]  // productID → JWS
         
         // Check current entitlements
         for await result in Transaction.currentEntitlements {

@@ -212,7 +212,6 @@ class APIService {
         }
         return url
     }
-    }
     
     // MARK: - Knowledge Map
     
