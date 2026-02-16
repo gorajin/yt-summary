@@ -20,6 +20,19 @@ struct KnowledgeMapView: View {
         mapResponse?.knowledgeMap?.connections ?? []
     }
     
+    // Graph view renders only the top topics by importance to avoid iOS OOM
+    private let graphTopicLimit = 25
+    
+    private var graphTopics: [APIService.TopicData] {
+        let sorted = topics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
+        return Array(sorted.prefix(graphTopicLimit))
+    }
+    
+    private var graphConnections: [APIService.TopicConnectionData] {
+        let graphTopicNames = Set(graphTopics.map { $0.name })
+        return connections.filter { graphTopicNames.contains($0.from) && graphTopicNames.contains($0.to) }
+    }
+    
     var body: some View {
         NavigationStack {
             ZStack {
@@ -33,8 +46,8 @@ struct KnowledgeMapView: View {
                 } else {
                     if showGraphView {
                         TopicGraphView(
-                            topics: topics,
-                            connections: connections,
+                            topics: graphTopics,
+                            connections: graphConnections,
                             selectedTopic: $selectedTopic
                         )
                     } else {

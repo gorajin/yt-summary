@@ -142,7 +142,7 @@ struct TopicGraphView: View {
         }
         
         // Run a few iterations of force-directed adjustment
-        for _ in 0..<50 {
+        for _ in 0..<20 {
             applyForces()
         }
         
