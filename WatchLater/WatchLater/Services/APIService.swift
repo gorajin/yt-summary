@@ -200,14 +200,20 @@ class APIService {
     func getNotionAuthURL(userId: String) async throws -> URL {
         let endpoint = URL(string: "\(AppConfig.apiBaseURL)/auth/notion?user_id=\(userId)")!
         
-        let (data, _) = try await URLSession.shared.data(from: endpoint)
+        let (data, response) = try await URLSession.shared.data(from: endpoint)
+        
+        // Check HTTP status
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            let body = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw APIError.serverError("Server error (\(httpResponse.statusCode)): \(body)")
+        }
         
         struct AuthURLResponse: Codable {
             let auth_url: String
         }
         
-        let response = try JSONDecoder().decode(AuthURLResponse.self, from: data)
-        guard let url = URL(string: response.auth_url) else {
+        let decoded = try JSONDecoder().decode(AuthURLResponse.self, from: data)
+        guard let url = URL(string: decoded.auth_url) else {
             throw APIError.invalidURL
         }
         return url
