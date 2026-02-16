@@ -148,10 +148,18 @@ async def export_summary_endpoint(
         summary = result.data[0]
         
         if not summary.get("summary_json"):
-            raise HTTPException(status_code=404, detail="No content available for export (legacy summary)")
+            raise HTTPException(status_code=404, detail="Export not available — summary content is not stored in database")
+        
+        # Extract video_id from youtube_url
+        yt_url = summary.get("youtube_url", "")
+        vid = ""
+        if "v=" in yt_url:
+            vid = yt_url.split("v=")[1].split("&")[0]
+        elif "youtu.be/" in yt_url:
+            vid = yt_url.split("youtu.be/")[1].split("?")[0]
         
         try:
-            content, content_type = export_summary(summary, fmt=format, video_id=summary.get("video_id"))
+            content, content_type = export_summary(summary, fmt=format, video_id=vid)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         

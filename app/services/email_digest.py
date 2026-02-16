@@ -228,9 +228,8 @@ def get_todays_summaries(supabase_client, user_id: str) -> list:
         
         result = (
             supabase_client.table("summaries")
-            .select("id, youtube_url, video_id, title, overview, content_type, summary_json, created_at")
+            .select("id, youtube_url, title, notion_url, created_at")
             .eq("user_id", user_id)
-            .is_("deleted_at", "null")
             .gte("created_at", cutoff)
             .order("created_at", desc=True)
             .execute()
