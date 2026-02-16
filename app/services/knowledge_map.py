@@ -5,6 +5,7 @@ Second-pass AI agent that analyzes all of a user's summaries and produces
 a cross-video topic graph with facts, connections, and importance scores.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -173,7 +174,7 @@ Here are {len(condensed)} video summaries to analyze:
 
 {json.dumps(condensed, indent=2)}"""
     
-    response = call_gemini_api(prompt, timeout=120)
+    response = await asyncio.to_thread(call_gemini_api, prompt, 3, 120)
     return _parse_knowledge_map_response(response)
 
 
@@ -195,7 +196,7 @@ Here are {len(chunk)} video summaries to analyze (batch {i + 1} of {len(chunks)}
 
 {json.dumps(chunk, indent=2)}"""
         
-        response = call_gemini_api(prompt, timeout=120)
+        response = await asyncio.to_thread(call_gemini_api, prompt, 3, 120)
         partial_map = _parse_knowledge_map_response(response)
         partial_maps.append(partial_map)
     
@@ -221,7 +222,7 @@ async def _merge_maps(map1: KnowledgeMap, map2: KnowledgeMap) -> KnowledgeMap:
         map2=json.dumps(map2.to_dict(), indent=2),
     )
     
-    response = call_gemini_api(prompt, timeout=120)
+    response = await asyncio.to_thread(call_gemini_api, prompt, 3, 120)
     return _parse_knowledge_map_response(response)
 
 
