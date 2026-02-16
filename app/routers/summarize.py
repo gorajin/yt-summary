@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 
-from ..models import SummarizeRequest, SummarizeResponse, TranscriptSegment
+from ..models import SummarizeRequest, SummarizeResponse, IngestRequest, TranscriptSegment, SourceType
 from ..services.youtube import extract_video_id, get_transcript_with_timestamps
 from ..services.gemini import process_long_transcript
 from ..services.notion import create_lecture_notes_page
@@ -109,16 +109,21 @@ async def process_summarization_job(
         await update_job(job_id, progress=85, stage="Summary complete")
         logger.info(f"Job {job_id[:8]}: Generated: {notes.title}")
         
-        # Stage 4: Notion (85-100%)
-        await update_job(job_id, progress=90, stage="Saving to Notion")
-        logger.info(f"Job {job_id[:8]}: Creating Notion page")
-        notion_url = create_lecture_notes_page(
-            notion_token=notion_token,
-            database_id=database_id,
-            notes=notes,
-            video_url=f"https://youtu.be/{video_id}",
-            video_id=video_id
-        )
+        # Stage 4: Notion (85-100%) — only if user has Notion connected
+        notion_url = None
+        if notion_token and database_id:
+            await update_job(job_id, progress=90, stage="Saving to Notion")
+            logger.info(f"Job {job_id[:8]}: Creating Notion page")
+            notion_url = create_lecture_notes_page(
+                notion_token=notion_token,
+                database_id=database_id,
+                notes=notes,
+                video_url=f"https://youtu.be/{video_id}",
+                video_id=video_id
+            )
+        else:
+            logger.info(f"Job {job_id[:8]}: Notion not connected, skipping")
+            await update_job(job_id, progress=90, stage="Saving summary")
         
         # Increment usage (non-critical)
         try:
@@ -126,14 +131,23 @@ async def process_summarization_job(
         except Exception as usage_err:
             logger.warning(f"Job {job_id[:8]}: Usage increment failed: {usage_err}")
         
-        # Log summary (non-critical)
+        # Log summary with full content (non-critical)
+        summary_id = None
         try:
-            supabase.table("summaries").insert({
+            summary_data = {
                 "user_id": user["id"],
                 "youtube_url": url,
+                "video_id": video_id,
                 "title": notes.title,
-                "notion_url": notion_url
-            }).execute()
+                "overview": notes.overview,
+                "content_type": notes.content_type.value,
+                "summary_json": notes.to_dict(),
+                "notion_url": notion_url,
+                "source_type": "youtube",
+            }
+            result = supabase.table("summaries").insert(summary_data).execute()
+            if result.data:
+                summary_id = result.data[0].get("id")
         except Exception as log_err:
             logger.warning(f"Job {job_id[:8]}: Summary logging failed: {log_err}")
         
@@ -146,10 +160,11 @@ async def process_summarization_job(
             result={
                 "success": True,
                 "title": notes.title,
-                "notionUrl": notion_url
+                "notionUrl": notion_url,
+                "summaryId": summary_id,
             }
         )
-        logger.info(f"Job {job_id[:8]}: Complete → {notion_url}")
+        logger.info(f"Job {job_id[:8]}: Complete → notion={notion_url}, id={summary_id}")
         
     except Exception as e:
         error_msg = str(e)
@@ -176,18 +191,10 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
     """
     # Validate: transcript is optional, server will fall back if not provided
     # (Client-side extraction is preferred but may fail due to YouTube changes)
-
     
     try:
         # Check user-level rate limit (monthly quota)
         remaining = check_rate_limit(user)
-        
-        # Check Notion is connected
-        notion_token = user.get("notion_access_token")
-        database_id = user.get("notion_database_id")
-        
-        if not notion_token or not database_id:
-            raise HTTPException(status_code=400, detail="Please connect your Notion first")
         
         # Validate URL
         video_id = extract_video_id(body.url)
@@ -225,4 +232,150 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error creating job: {error_msg}")
+        raise HTTPException(status_code=500, detail=get_friendly_error(error_msg))
+
+
+async def process_ingest_job(
+    job_id: str,
+    user: dict,
+    url: str,
+    source_type: SourceType,
+    content: Optional[str] = None,
+):
+    """Background task to process a non-YouTube content ingestion job."""
+    from ..services.extractors import extract_content
+    
+    try:
+        notion_token = user.get("notion_access_token")
+        database_id = user.get("notion_database_id")
+        
+        # Stage 1: Extract content (0-30%)
+        await update_job(job_id, status=JobStatus.PROCESSING, progress=5, stage="Extracting content")
+        segments, title, detected_type = extract_content(url, source_type=source_type, content=content)
+        await update_job(job_id, progress=30, stage="Content extracted")
+        logger.info(f"Job {job_id[:8]}: Extracted {len(segments)} segments from {detected_type.value}")
+        
+        # Stage 2: Summarization (30-85%)
+        await update_job(job_id, progress=40, stage="Generating summary")
+        notes = process_long_transcript(segments, title, video_id="")
+        await update_job(job_id, progress=85, stage="Summary complete")
+        logger.info(f"Job {job_id[:8]}: Generated: {notes.title}")
+        
+        # Stage 3: Notion (85-95%) — only if connected
+        notion_url = None
+        if notion_token and database_id:
+            await update_job(job_id, progress=90, stage="Saving to Notion")
+            notion_url = create_lecture_notes_page(
+                notion_token=notion_token,
+                database_id=database_id,
+                notes=notes,
+                video_url=url,
+                video_id=""
+            )
+        else:
+            await update_job(job_id, progress=90, stage="Saving summary")
+        
+        # Increment usage
+        try:
+            increment_usage(user["id"])
+        except Exception:
+            pass
+        
+        # Store in Supabase
+        summary_id = None
+        try:
+            summary_data = {
+                "user_id": user["id"],
+                "youtube_url": url,  # Reusing column for any source URL
+                "video_id": None,
+                "title": notes.title,
+                "overview": notes.overview,
+                "content_type": notes.content_type.value,
+                "summary_json": notes.to_dict(),
+                "notion_url": notion_url,
+                "source_type": detected_type.value,
+                "source_url": url,
+            }
+            result = supabase.table("summaries").insert(summary_data).execute()
+            if result.data:
+                summary_id = result.data[0].get("id")
+        except Exception as log_err:
+            logger.warning(f"Job {job_id[:8]}: Summary logging failed: {log_err}")
+        
+        await update_job(
+            job_id,
+            status=JobStatus.COMPLETE,
+            progress=100,
+            stage="Complete",
+            result={
+                "success": True,
+                "title": notes.title,
+                "notionUrl": notion_url,
+                "summaryId": summary_id,
+                "sourceType": detected_type.value,
+            }
+        )
+        logger.info(f"Job {job_id[:8]}: Complete → type={detected_type.value}, id={summary_id}")
+        
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Job {job_id[:8]}: Failed: {error_msg}")
+        await update_job(
+            job_id,
+            status=JobStatus.FAILED,
+            progress=0,
+            stage="Failed",
+            error=get_friendly_error(error_msg)
+        )
+
+
+@router.post("/ingest")
+async def ingest(request: Request, body: IngestRequest, user: dict = Depends(get_current_user)):
+    """Ingest any content source (article, PDF, podcast).
+    
+    Returns immediately with a job_id. Poll /status/{job_id} for progress.
+    """
+    try:
+        remaining = check_rate_limit(user)
+        
+        # Auto-detect source type if not provided
+        from ..services.extractors import detect_source_type
+        source_type = body.source_type or detect_source_type(body.url)
+        
+        if source_type == SourceType.YOUTUBE:
+            raise HTTPException(status_code=400, detail="Use /summarize for YouTube videos")
+        
+        if source_type == SourceType.PODCAST:
+            raise HTTPException(status_code=400, detail="Podcast support is coming soon")
+        
+        # Create job
+        job = await create_job(user["id"], body.url)
+        logger.info(f"Created ingest job {job.id[:8]}: type={source_type.value}, url={body.url}")
+        
+        asyncio.create_task(
+            process_ingest_job(
+                job_id=job.id,
+                user=user,
+                url=body.url,
+                source_type=source_type,
+                content=body.content,
+            )
+        )
+        
+        return JSONResponse(
+            status_code=202,
+            content={
+                "job_id": job.id,
+                "status": "pending",
+                "source_type": source_type.value,
+                "message": "Job created. Poll /status/{job_id} for progress.",
+                "remaining": remaining - 1 if remaining > 0 else -1
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error creating ingest job: {error_msg}")
         raise HTTPException(status_code=500, detail=get_friendly_error(error_msg))

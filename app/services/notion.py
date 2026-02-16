@@ -8,7 +8,7 @@ and legacy summary formats.
 from datetime import date
 from notion_client import Client as NotionClient
 
-from ..models import ContentType, LectureNotes
+from ..models import ContentType, LectureNotes, KnowledgeMap
 
 
 def create_notion_page(notion_token: str, database_id: str, title: str, url: str, 
@@ -416,3 +416,192 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
         print(f"  → Notion: Successfully saved {appended_blocks}/{total_blocks} blocks")
     
     return page_url
+
+
+def create_knowledge_map_page(notion_token: str, database_id: str,
+                               knowledge_map: KnowledgeMap) -> str:
+    """Create a Notion page with the user's knowledge map.
+    
+    Each topic becomes a toggle block containing its description, facts
+    (with source video attribution), and related topics.
+    
+    Returns:
+        URL of the created Notion page
+    """
+    notion = NotionClient(auth=notion_token)
+    today_str = date.today().strftime("%Y-%m-%d")
+    
+    topic_count = len(knowledge_map.topics)
+    title_text = f"🗺️ Knowledge Map — {today_str}"
+    
+    # Create the page
+    page = notion.pages.create(
+        parent={"database_id": database_id},
+        properties={
+            "Title": {"title": [{"text": {"content": title_text}}]},
+            "Type": {"select": {"name": "General"}},
+            "Date Added": {"date": {"start": today_str}},
+        },
+    )
+    
+    page_id = page["id"]
+    page_url = page.get("url", "")
+    
+    # Build blocks
+    blocks = []
+    
+    # Header callout
+    blocks.append({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": [{"type": "text", "text": {"content": 
+                f"Knowledge map synthesized from {knowledge_map.total_summaries} videos • "
+                f"{topic_count} topics discovered"
+            }}],
+            "icon": {"emoji": "🧠"},
+            "color": "blue_background",
+        }
+    })
+    
+    # Divider
+    blocks.append({"object": "block", "type": "divider", "divider": {}})
+    
+    # Topics section header
+    blocks.append({
+        "object": "block",
+        "type": "heading_2",
+        "heading_2": {
+            "rich_text": [{"type": "text", "text": {"content": "📚 Topics"}}],
+        }
+    })
+    
+    # Each topic as a toggle block
+    for topic in knowledge_map.topics:
+        # Importance badge
+        importance_bar = "🟢" * min(topic.importance, 10)
+        
+        # Toggle heading: Topic Name (importance)
+        toggle_children = []
+        
+        # Description
+        toggle_children.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [
+                    {"type": "text", "text": {"content": topic.description},
+                     "annotations": {"italic": True, "color": "gray"}},
+                ],
+            }
+        })
+        
+        # Facts with source attribution
+        if topic.facts:
+            toggle_children.append({
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {
+                    "rich_text": [{"type": "text", "text": {"content": "Key Facts"}}],
+                }
+            })
+            
+            for fact in topic.facts[:10]:  # Cap at 10 facts per topic
+                source_text = f" — {fact.source_title}" if fact.source_title else ""
+                # Fact as bulleted list with source
+                rich_text = [
+                    {"type": "text", "text": {"content": fact.fact}},
+                ]
+                if source_text:
+                    rich_text.append({
+                        "type": "text",
+                        "text": {"content": source_text},
+                        "annotations": {"italic": True, "color": "gray"},
+                    })
+                
+                toggle_children.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": rich_text},
+                })
+        
+        # Related topics
+        if topic.related_topics:
+            related_text = "Related: " + ", ".join(topic.related_topics)
+            toggle_children.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {"type": "text", "text": {"content": related_text},
+                         "annotations": {"color": "purple"}},
+                    ],
+                }
+            })
+        
+        # Videos count
+        if topic.video_ids:
+            toggle_children.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {"type": "text", "text": {"content": f"📹 Discussed in {len(topic.video_ids)} video(s)"},
+                         "annotations": {"color": "gray"}},
+                    ],
+                }
+            })
+        
+        # The toggle block itself
+        blocks.append({
+            "object": "block",
+            "type": "toggle",
+            "toggle": {
+                "rich_text": [
+                    {"type": "text", "text": {"content": f"{topic.name} "},
+                     "annotations": {"bold": True}},
+                    {"type": "text", "text": {"content": f" {importance_bar}"}},
+                ],
+                "children": toggle_children,
+            }
+        })
+    
+    # Connections section
+    if knowledge_map.connections:
+        blocks.append({"object": "block", "type": "divider", "divider": {}})
+        blocks.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [{"type": "text", "text": {"content": "🔗 Connections"}}],
+            }
+        })
+        
+        for conn in knowledge_map.connections:
+            blocks.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [
+                        {"type": "text", "text": {"content": conn.from_topic},
+                         "annotations": {"bold": True}},
+                        {"type": "text", "text": {"content": f" → {conn.relationship} → "}},
+                        {"type": "text", "text": {"content": conn.to_topic},
+                         "annotations": {"bold": True}},
+                    ],
+                }
+            })
+    
+    # Append blocks in batches (Notion limit: 100 blocks per request)
+    batch_size = 100
+    for i in range(0, len(blocks), batch_size):
+        batch = blocks[i:i + batch_size]
+        try:
+            notion.blocks.children.append(block_id=page_id, children=batch)
+        except Exception as e:
+            print(f"  → Notion: Error appending batch {i // batch_size + 1}: {e}")
+            break
+    
+    print(f"  → Notion: Knowledge map page created with {len(blocks)} blocks")
+    return page_url
+

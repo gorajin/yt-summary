@@ -11,10 +11,10 @@ import json
 import base64
 import logging
 import secrets
-import urllib.request
 from typing import Optional
 from datetime import datetime
 
+import httpx
 from fastapi import APIRouter, HTTPException, Depends, Header
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -162,6 +162,7 @@ class SubscriptionSyncRequest(BaseModel):
     """Request to sync a StoreKit subscription with the backend."""
     product_id: str
     original_transaction_id: Optional[str] = None
+    signed_transaction: Optional[str] = None  # JWS from StoreKit 2
 
 
 @router.post("/subscription/sync")
@@ -174,11 +175,15 @@ async def sync_subscription(
     Called by the iOS app after a successful purchase or on app launch
     when an active subscription is detected.
     
-    For launch: trusts the client-verified transaction.
-    Future: validate with Apple's App Store Server API.
+    If `signed_transaction` is provided (JWS from StoreKit 2), it is
+    cryptographically verified against Apple's certificate chain.
+    Otherwise falls back to trusting the client (backward compat).
     """
     user_id = user["id"]
     product_id = body.product_id
+    original_txn_id = body.original_transaction_id
+    expires_at = None
+    verified = False
     
     # Map Apple product IDs to subscription tiers
     PRO_PRODUCT_IDS = {
@@ -186,25 +191,109 @@ async def sync_subscription(
         "com.watchlater.app.pro.yearly",
     }
     
-    if product_id not in PRO_PRODUCT_IDS:
-        raise HTTPException(status_code=400, detail=f"Unknown product: {product_id}")
+    # --- JWS Verification (preferred) ---
+    if body.signed_transaction:
+        try:
+            from ..services.apple_receipt import verify_signed_transaction, ReceiptValidationError
+            
+            txn = verify_signed_transaction(body.signed_transaction)
+            
+            # Use verified values instead of client-provided ones
+            product_id = txn.product_id
+            original_txn_id = txn.original_transaction_id
+            expires_at = txn.expires_date
+            verified = True
+            
+            if not txn.is_valid_pro:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Product '{product_id}' is not a recognized Pro subscription"
+                )
+            
+            logger.info(f"JWS verified for user {user_id}: product={product_id}, expires={expires_at}")
+            
+        except ReceiptValidationError as e:
+            logger.warning(f"JWS verification failed for user {user_id}: {e}")
+            raise HTTPException(status_code=403, detail=f"Receipt verification failed: {e}")
+    else:
+        # Fallback: trust client (backward compatibility for older app versions)
+        logger.warning(f"No signed_transaction provided for user {user_id}, trusting client claim")
+        if product_id not in PRO_PRODUCT_IDS:
+            raise HTTPException(status_code=400, detail=f"Unknown product: {product_id}")
     
-    # Update user's subscription tier
+    # Update user's subscription tier with tracking data
     try:
-        supabase.table("users").update({
+        update_data = {
             "subscription_tier": "pro",
-        }).eq("id", user_id).execute()
+            "subscription_product_id": product_id,
+            "updated_at": datetime.now().isoformat(),
+        }
+        if original_txn_id:
+            update_data["original_transaction_id"] = original_txn_id
+        if expires_at:
+            update_data["subscription_expires_at"] = expires_at.isoformat()
         
-        logger.info(f"Subscription synced: user={user_id}, product={product_id}")
+        supabase.table("users").update(update_data).eq("id", user_id).execute()
+        
+        logger.info(f"Subscription synced: user={user_id}, product={product_id}, verified={verified}")
         
         return {
             "success": True,
             "subscription_tier": "pro",
+            "verified": verified,
             "message": "Subscription activated successfully"
         }
     except Exception as e:
         logger.error(f"Subscription sync failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to sync subscription")
+
+
+@router.post("/subscription/downgrade")
+async def downgrade_subscription(user: dict = Depends(get_current_user)):
+    """Downgrade a user back to free tier.
+    
+    Called by the iOS app when Transaction.currentEntitlements returns empty
+    (subscription expired, cancelled, or refunded). The absence of an active
+    entitlement on the device IS the proof of expiry.
+    
+    Only downgrades users who are currently on 'pro' tier.
+    """
+    user_id = user["id"]
+    current_tier = user.get("subscription_tier", "free")
+    
+    if current_tier == "free":
+        return {
+            "success": True,
+            "subscription_tier": "free",
+            "message": "Already on free tier"
+        }
+    
+    # Don't downgrade lifetime or admin users
+    if current_tier in ["lifetime", "admin"]:
+        logger.info(f"Skipping downgrade for {current_tier} user {user_id}")
+        return {
+            "success": True,
+            "subscription_tier": current_tier,
+            "message": f"Cannot downgrade {current_tier} tier"
+        }
+    
+    try:
+        supabase.table("users").update({
+            "subscription_tier": "free",
+            "subscription_expires_at": None,
+            "updated_at": datetime.now().isoformat(),
+        }).eq("id", user_id).execute()
+        
+        logger.info(f"Subscription downgraded: user={user_id} (pro → free)")
+        
+        return {
+            "success": True,
+            "subscription_tier": "free",
+            "message": "Subscription expired — downgraded to free tier"
+        }
+    except Exception as e:
+        logger.error(f"Subscription downgrade failed for {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update subscription")
 
 
 @router.get("/auth/notion")
@@ -247,22 +336,23 @@ async def notion_auth_callback(code: str, state: str):
             "redirect_uri": NOTION_REDIRECT_URI
         }
         
-        req = urllib.request.Request(
-            token_url,
-            data=json.dumps(data).encode('utf-8'),
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Basic {credentials}'
-            },
-            method='POST'
-        )
-        
         try:
-            with urllib.request.urlopen(req) as response:
-                token_data = json.loads(response.read().decode('utf-8'))
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode('utf-8')
-            logger.error(f"Notion token exchange failed: {e.code} - {error_body}")
+            async with httpx.AsyncClient() as client:
+                token_response = await client.post(
+                    token_url,
+                    json=data,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Basic {credentials}'
+                    },
+                    timeout=15.0
+                )
+                if token_response.status_code != 200:
+                    logger.error(f"Notion token exchange failed: {token_response.status_code} - {token_response.text}")
+                    return RedirectResponse(url="watchlater://notion-connected?success=false&error=token_exchange_failed")
+                token_data = token_response.json()
+        except httpx.RequestError as e:
+            logger.error(f"Notion token exchange network error: {e}")
             return RedirectResponse(url="watchlater://notion-connected?success=false&error=token_exchange_failed")
         
         access_token = token_data.get("access_token")
@@ -350,7 +440,7 @@ async def get_profile(user: dict = Depends(get_current_user)):
     limit = ADMIN_TIER_LIMIT if tier == "admin" else FREE_TIER_LIMIT
     remaining = -1 if tier in ["pro", "lifetime"] else max(0, limit - used)
     
-    return UserProfile(
+    profile = UserProfile(
         id=user["id"],
         email=user["email"],
         notion_connected=bool(user.get("notion_access_token") and user.get("notion_database_id")),
@@ -358,3 +448,70 @@ async def get_profile(user: dict = Depends(get_current_user)):
         summaries_this_month=used,
         summaries_remaining=remaining
     )
+    
+    # Add email digest preferences
+    return {
+        **profile.model_dump(),
+        "email_digest_enabled": user.get("email_digest_enabled", True),
+        "email_digest_time": user.get("email_digest_time", "20:00"),
+        "timezone": user.get("timezone", "UTC"),
+    }
+
+
+class EmailPreferencesRequest(BaseModel):
+    """Request to update email digest preferences."""
+    email_digest_enabled: Optional[bool] = None
+    email_digest_time: Optional[str] = None  # HH:MM format
+    timezone: Optional[str] = None
+
+
+@router.get("/email/preferences")
+async def get_email_preferences(user: dict = Depends(get_current_user)):
+    """Get current email digest preferences."""
+    return {
+        "email_digest_enabled": user.get("email_digest_enabled", True),
+        "email_digest_time": user.get("email_digest_time", "20:00"),
+        "timezone": user.get("timezone", "UTC"),
+    }
+
+
+@router.put("/email/preferences")
+async def update_email_preferences(
+    body: EmailPreferencesRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Update email digest preferences."""
+    user_id = user["id"]
+    
+    update_data = {"updated_at": datetime.now().isoformat()}
+    
+    if body.email_digest_enabled is not None:
+        update_data["email_digest_enabled"] = body.email_digest_enabled
+    
+    if body.email_digest_time is not None:
+        # Validate HH:MM format
+        try:
+            parts = body.email_digest_time.split(":")
+            hour = int(parts[0])
+            minute = int(parts[1])
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+            update_data["email_digest_time"] = f"{hour:02d}:{minute:02d}"
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail="Invalid time format. Use HH:MM (e.g., '20:00')")
+    
+    if body.timezone is not None:
+        update_data["timezone"] = body.timezone
+    
+    try:
+        supabase.table("users").update(update_data).eq("id", user_id).execute()
+        
+        return {
+            "success": True,
+            "email_digest_enabled": update_data.get("email_digest_enabled", user.get("email_digest_enabled", True)),
+            "email_digest_time": update_data.get("email_digest_time", user.get("email_digest_time", "20:00")),
+            "timezone": update_data.get("timezone", user.get("timezone", "UTC")),
+        }
+    except Exception as e:
+        logger.error(f"Failed to update email prefs for {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update preferences")

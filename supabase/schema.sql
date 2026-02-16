@@ -15,23 +15,49 @@ CREATE TABLE IF NOT EXISTS public.users (
     summaries_this_month INT DEFAULT 0,
     summaries_reset_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    original_transaction_id TEXT,                        -- Apple original transaction ID
+    subscription_product_id TEXT,                        -- e.g. com.watchlater.app.pro.monthly
+    subscription_expires_at TIMESTAMP WITH TIME ZONE,    -- When the current subscription period ends
+    email_digest_enabled BOOLEAN DEFAULT true,           -- Whether to send daily digest emails
+    email_digest_time TEXT DEFAULT '20:00',               -- User's preferred digest time (HH:MM)
+    timezone TEXT DEFAULT 'UTC',                          -- User's timezone for digest scheduling
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Migration for existing installations (subscription tracking):
+-- ALTER TABLE public.users ADD COLUMN IF NOT EXISTS original_transaction_id TEXT;
+-- ALTER TABLE public.users ADD COLUMN IF NOT EXISTS subscription_product_id TEXT;
+-- ALTER TABLE public.users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP WITH TIME ZONE;
+-- ALTER TABLE public.users ADD COLUMN IF NOT EXISTS email_digest_enabled BOOLEAN DEFAULT true;
+-- ALTER TABLE public.users ADD COLUMN IF NOT EXISTS email_digest_time TEXT DEFAULT '20:00';
+-- ALTER TABLE public.users ADD COLUMN IF NOT EXISTS timezone TEXT DEFAULT 'UTC';
 
 -- Summaries log table
 CREATE TABLE IF NOT EXISTS public.summaries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
     youtube_url TEXT NOT NULL,
+    video_id TEXT,                                       -- YouTube video ID for deep links
     title TEXT,
-    notion_url TEXT,                                    -- NEW: Store Notion page URL for history
-    deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,   -- NEW: Soft delete timestamp
+    overview TEXT,                                       -- One-liner summary for list previews
+    content_type TEXT,                                   -- lecture, interview, tutorial, etc.
+    summary_json JSONB,                                  -- Full LectureNotes JSON for in-app reading
+    notion_url TEXT,                                     -- Notion page URL (optional)
+    source_type TEXT DEFAULT 'youtube',                  -- youtube, article, pdf, podcast
+    source_url TEXT,                                     -- Original source URL (for non-YouTube)
+    deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,    -- Soft delete timestamp
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Migration for existing installations:
 -- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS notion_url TEXT;
 -- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS video_id TEXT;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS overview TEXT;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS content_type TEXT;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS summary_json JSONB;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'youtube';
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS source_url TEXT;
 
 -- Function to increment summary count
 CREATE OR REPLACE FUNCTION increment_summaries(p_user_id UUID)

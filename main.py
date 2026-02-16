@@ -21,7 +21,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.config import ALLOWED_ORIGINS, validate_startup, setup_logging
-from app.routers import auth, summarize, history, status, config_router
+from app.routers import auth, summarize, history, status, config_router, knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ async def _periodic_job_cleanup():
 # Initialize FastAPI app
 app = FastAPI(
     title="YouTube Summary API",
-    version="2.2.0",
+    version="3.6.0",
     description="Summarize YouTube videos and save to Notion",
     lifespan=lifespan,
 )
@@ -91,13 +91,20 @@ app.include_router(summarize.router)
 app.include_router(history.router)
 app.include_router(status.router)
 app.include_router(config_router.router)
+app.include_router(knowledge.router)
 
 
 @app.get("/")
 @limiter.limit("60/minute")
-async def health(request: Request):
-    """Health check endpoint."""
-    return {"status": "ok", "service": "YouTube Summary API", "version": "2.2.0"}
+async def root(request: Request):
+    """Root endpoint."""
+    return {"status": "ok", "service": "YouTube Summary API", "version": "3.6.0"}
+
+
+@app.get("/health")
+async def health_check():
+    """Dedicated health check endpoint for PaaS platforms (Railway, etc.)."""
+    return {"status": "ok", "version": "3.6.0"}
 
 
 if __name__ == "__main__":

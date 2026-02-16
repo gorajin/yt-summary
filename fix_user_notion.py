@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """
 Diagnostic script to check and fix user's Notion database_id in Supabase.
+
+Usage:
+    python fix_user_notion.py <user_id>
+
+Example:
+    python fix_user_notion.py bd37a28a-d6e4-4d77-a85a-e31789c9024e
 """
 
 import os
+import sys
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -16,10 +23,15 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     print("ERROR: SUPABASE_URL and SUPABASE_KEY must be set in .env")
     exit(1)
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Accept user ID as CLI argument
+if len(sys.argv) < 2:
+    print("Usage: python fix_user_notion.py <user_id>")
+    print("Example: python fix_user_notion.py bd37a28a-d6e4-4d77-a85a-e31789c9024e")
+    exit(1)
 
-# User ID from the logs
-USER_ID = "bd37a28a-d6e4-4d77-a85a-e31789c9024e"
+USER_ID = sys.argv[1]
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 print(f"Checking user: {USER_ID}")
 print("-" * 50)

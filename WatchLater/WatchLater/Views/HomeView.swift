@@ -27,6 +27,25 @@ struct HomeView: View {
                     .ignoresSafeArea()
                 
                 VStack(spacing: 24) {
+                    if viewModel.isLoadingProfile {
+                        // Loading skeleton
+                        VStack(spacing: 16) {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(.systemGray5))
+                                .frame(height: 50)
+                            
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(.systemGray5))
+                                .frame(height: 120)
+                            
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(.systemGray6))
+                                .frame(height: 20)
+                        }
+                        .padding(.horizontal)
+                        .redacted(reason: .placeholder)
+                        .shimmer()
+                    } else {
                     // Notion Connection Status
                     if !viewModel.isNotionConnected {
                         NotionConnectionCard(onConnect: connectNotion)
@@ -187,6 +206,7 @@ struct HomeView: View {
                         .foregroundStyle(.secondary)
                         .padding(.horizontal)
                     }
+                    } // end else (loading skeleton)
                     
                     Spacer()
                 }
@@ -395,4 +415,41 @@ struct SettingsView: View {
     HomeView()
         .environmentObject(AuthManager())
         .environmentObject(StoreManager())
+}
+
+// MARK: - Shimmer Effect for Loading Skeleton
+
+struct ShimmerModifier: ViewModifier {
+    @State private var phase: CGFloat = 0
+    
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { geometry in
+                    LinearGradient(
+                        colors: [
+                            .clear,
+                            Color.white.opacity(0.4),
+                            .clear
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: geometry.size.width * 0.6)
+                    .offset(x: -geometry.size.width + (geometry.size.width * 1.6 * phase))
+                }
+                .clipped()
+            )
+            .onAppear {
+                withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+    }
+}
+
+extension View {
+    func shimmer() -> some View {
+        modifier(ShimmerModifier())
+    }
 }

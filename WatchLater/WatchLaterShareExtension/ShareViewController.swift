@@ -184,6 +184,11 @@ class ShareViewController: UIViewController {
                 userInfo: [NSLocalizedDescriptionKey: "Please sign in first"])
         }
         
+        if httpResponse.statusCode == 429 {
+            throw NSError(domain: "WatchLater", code: 429,
+                userInfo: [NSLocalizedDescriptionKey: "Monthly limit reached. Open WatchLater to upgrade to Pro for unlimited summaries."])
+        }
+        
         if httpResponse.statusCode >= 400 {
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let detail = json["detail"] as? String {
@@ -348,41 +353,7 @@ class ShareViewController: UIViewController {
 }
 
 
-// MARK: - Progress Stage Model
-
-enum SummarizationStage: CaseIterable {
-    case fetchingTranscript
-    case analyzingContent
-    case generatingSummary
-    case savingToNotion
-    
-    var displayText: String {
-        switch self {
-        case .fetchingTranscript: return "Fetching transcript..."
-        case .analyzingContent: return "Analyzing content..."
-        case .generatingSummary: return "Generating summary..."
-        case .savingToNotion: return "Saving to Notion..."
-        }
-    }
-    
-    var icon: String {
-        switch self {
-        case .fetchingTranscript: return "text.bubble"
-        case .analyzingContent: return "doc.text.magnifyingglass"
-        case .generatingSummary: return "sparkles"
-        case .savingToNotion: return "square.and.arrow.up"
-        }
-    }
-    
-    var estimatedDuration: Double {
-        switch self {
-        case .fetchingTranscript: return 3.0
-        case .analyzingContent: return 5.0
-        case .generatingSummary: return 25.0
-        case .savingToNotion: return 4.0
-        }
-    }
-}
+// SummarizationStage is defined in the shared SummarizationStage.swift file
 
 // MARK: - SwiftUI Share View
 

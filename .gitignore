@@ -2,3 +2,22 @@ node_modules/
 .env
 .DS_Store
 *.xcuserstate
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.venv/
+dist/
+build/
+
+# Xcode
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# IDE
+.vscode/
+.idea/

@@ -18,7 +18,7 @@ struct ContentView: View {
     }
 }
 
-/// Tab bar with Home + History
+/// Tab bar with Home + History + Knowledge Map
 struct MainTabView: View {
     @EnvironmentObject var storeManager: StoreManager
     
@@ -32,6 +32,11 @@ struct MainTabView: View {
             HistoryView()
                 .tabItem {
                     Label("History", systemImage: "clock.fill")
+                }
+            
+            KnowledgeMapView()
+                .tabItem {
+                    Label("Knowledge", systemImage: "map.fill")
                 }
         }
         .tint(.red)

@@ -13,15 +13,27 @@ class APIService {
     // MARK: - Summarize (Async Polling Architecture)
     
     func summarize(url: String, transcript: String? = nil, authToken: String) async throws -> SummaryResponse {
-        // Step 1: Initiate job
-        let jobId = try await initiateJob(url: url, transcript: transcript, authToken: authToken)
+        // Step 1: Initiate job (also returns remaining count from 202 response)
+        let (jobId, remaining) = try await initiateJob(url: url, transcript: transcript, authToken: authToken)
         
         // Step 2: Poll for completion
-        return try await pollJobStatus(jobId: jobId, authToken: authToken)
+        var response = try await pollJobStatus(jobId: jobId, authToken: authToken)
+        // Merge remaining count from initial job creation response
+        if response.remaining == nil {
+            response = SummaryResponse(
+                success: response.success,
+                title: response.title,
+                notionUrl: response.notionUrl,
+                error: response.error,
+                remaining: remaining
+            )
+        }
+        return response
     }
     
     /// Initiate a summarization job and return job_id
-    private func initiateJob(url: String, transcript: String?, authToken: String) async throws -> String {
+    /// Initiate a summarization job and return (job_id, remaining_count)
+    private func initiateJob(url: String, transcript: String?, authToken: String) async throws -> (String, Int?) {
         let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summarize")!
         
         var request = URLRequest(url: endpoint)
@@ -58,14 +70,16 @@ class APIService {
             throw APIError.serverError("Server error (\(httpResponse.statusCode))")
         }
         
-        // Parse job_id from 202 response
+        // Parse job_id and remaining from 202 response
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let jobId = json["job_id"] as? String else {
             throw APIError.serverError("Invalid job response")
         }
         
-        print("API: Job created: \(jobId.prefix(8))...")
-        return jobId
+        let remaining = json["remaining"] as? Int
+        
+        print("API: Job created: \(jobId.prefix(8))... (remaining: \(remaining ?? -1))")
+        return (jobId, remaining)
     }
     
     /// Poll job status until complete or failed (max 4 minutes)
@@ -198,7 +212,116 @@ class APIService {
         }
         return url
     }
+    }
+    
+    // MARK: - Knowledge Map
+    
+    struct KnowledgeMapResponse: Codable {
+        let knowledgeMap: KnowledgeMapData?
+        let version: Int?
+        let notionUrl: String?
+        let updatedAt: String?
+        let summaryCount: Int?
+        let currentSummaryCount: Int?
+        let isStale: Bool?
+        let message: String?
+    }
+    
+    struct KnowledgeMapData: Codable {
+        let topics: [TopicData]?
+        let connections: [TopicConnectionData]?
+        let totalSummaries: Int?
+        let version: Int?
+    }
+    
+    struct TopicData: Codable, Identifiable {
+        var id: String { name }
+        let name: String
+        let description: String
+        let facts: [TopicFactData]?
+        let relatedTopics: [String]?
+        let videoIds: [String]?
+        let importance: Int?
+    }
+    
+    struct TopicFactData: Codable, Identifiable {
+        var id: String { fact }
+        let fact: String
+        let sourceVideoId: String?
+        let sourceTitle: String?
+    }
+    
+    struct TopicConnectionData: Codable, Identifiable {
+        var id: String { "\(from)_\(to)" }
+        let from: String
+        let to: String
+        let relationship: String
+    }
+    
+    func getKnowledgeMap(authToken: String) async throws -> KnowledgeMapResponse {
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/knowledge-map")!
+        
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+        
+        if httpResponse.statusCode != 200 {
+            throw APIError.serverError("Failed to fetch knowledge map (\(httpResponse.statusCode))")
+        }
+        
+        return try JSONDecoder().decode(KnowledgeMapResponse.self, from: data)
+    }
+    
+    struct BuildMapResponse: Codable {
+        let jobId: String
+        let message: String?
+    }
+    
+    func buildKnowledgeMap(authToken: String) async throws -> BuildMapResponse {
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/knowledge-map/build")!
+        
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+        
+        if httpResponse.statusCode == 429 {
+            throw APIError.rateLimited
+        }
+        
+        if httpResponse.statusCode >= 400 {
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("Server error (\(httpResponse.statusCode))")
+        }
+        
+        return try JSONDecoder().decode(BuildMapResponse.self, from: data)
+    }
 }
+
 
 // MARK: - Errors
 

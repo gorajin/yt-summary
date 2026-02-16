@@ -1,47 +1,13 @@
 import Foundation
 import SwiftUI
 
-// MARK: - Summarization Stage Model
-
-enum SummarizationStage: CaseIterable {
-    case fetchingTranscript   // "Fetching transcript..."
-    case analyzingContent     // "Analyzing content..."
-    case generatingSummary    // "Generating summary..."
-    case savingToNotion       // "Saving to Notion..."
-    
-    var displayText: String {
-        switch self {
-        case .fetchingTranscript: return "Fetching transcript..."
-        case .analyzingContent: return "Analyzing content..."
-        case .generatingSummary: return "Generating summary..."
-        case .savingToNotion: return "Saving to Notion..."
-        }
-    }
-    
-    var icon: String {
-        switch self {
-        case .fetchingTranscript: return "text.bubble"
-        case .analyzingContent: return "doc.text.magnifyingglass"
-        case .generatingSummary: return "sparkles"
-        case .savingToNotion: return "square.and.arrow.up"
-        }
-    }
-    
-    // Estimated duration in seconds for progress bar animation
-    var estimatedDuration: Double {
-        switch self {
-        case .fetchingTranscript: return 3.0
-        case .analyzingContent: return 5.0
-        case .generatingSummary: return 25.0  // Longest step (Gemini processing)
-        case .savingToNotion: return 4.0
-        }
-    }
-}
+// SummarizationStage is defined in the shared SummarizationStage.swift file
 
 @MainActor
 class HomeViewModel: ObservableObject {
     @Published var isNotionConnected = false
     @Published var isProcessing = false
+    @Published var isLoadingProfile = true  // Show skeleton initially
     @Published var statusMessage: String?
     @Published var isSuccess = false
     @Published var summariesRemaining: Int?
@@ -70,6 +36,7 @@ class HomeViewModel: ObservableObject {
     // MARK: - Load Profile
     
     func loadProfile(token: String) async {
+        isLoadingProfile = true
         do {
             let user = try await api.getProfile(authToken: token)
             isNotionConnected = user.notionConnected
@@ -78,6 +45,7 @@ class HomeViewModel: ObservableObject {
         } catch {
             print("Failed to load profile: \(error)")
         }
+        isLoadingProfile = false
     }
     
     // MARK: - Summarize with Client-Side Transcript Fetching
