@@ -160,6 +160,32 @@ async def build_knowledge_map(user_id: str, supabase_client=None) -> KnowledgeMa
     
     knowledge_map.total_summaries = len(summaries)
     
+    # Cap topics to prevent iOS memory crash from oversized response
+    MAX_TOPICS = 20
+    MAX_CONNECTIONS = 30
+    MAX_FACTS_PER_TOPIC = 5
+    
+    if len(knowledge_map.topics) > MAX_TOPICS:
+        # Sort by importance (highest first), keep top N
+        knowledge_map.topics.sort(key=lambda t: t.importance, reverse=True)
+        kept_topic_names = {t.name for t in knowledge_map.topics[:MAX_TOPICS]}
+        knowledge_map.topics = knowledge_map.topics[:MAX_TOPICS]
+        # Only keep connections between surviving topics
+        knowledge_map.connections = [
+            c for c in knowledge_map.connections
+            if c.from_topic in kept_topic_names and c.to_topic in kept_topic_names
+        ]
+        logger.info(f"Trimmed knowledge map from {len(summaries)} to {MAX_TOPICS} topics")
+    
+    # Cap connections
+    if len(knowledge_map.connections) > MAX_CONNECTIONS:
+        knowledge_map.connections = knowledge_map.connections[:MAX_CONNECTIONS]
+    
+    # Cap facts per topic to keep payload small
+    for topic in knowledge_map.topics:
+        if len(topic.facts) > MAX_FACTS_PER_TOPIC:
+            topic.facts = topic.facts[:MAX_FACTS_PER_TOPIC]
+    
     # Persist to Supabase
     await _persist_knowledge_map(client, user_id, knowledge_map)
     
