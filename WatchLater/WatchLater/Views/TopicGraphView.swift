@@ -58,60 +58,69 @@ struct TopicGraphView: View {
                             .foregroundColor(.secondary)
                         context.draw(text, at: mid)
                     }
-                }
-                .allowsHitTesting(false)
-                
-                // Nodes overlay (interactive)
-                if isLayoutReady {
-                    ForEach(topics) { topic in
-                        if let position = nodePositions[topic.name] {
-                            let adjusted = adjustedPoint(position, offset: offset, scale: scale, center: center)
-                            let nodeSize = nodeSizeFor(importance: topic.importance ?? 5)
-                            let colorIndex = topics.firstIndex(where: { $0.name == topic.name }) ?? 0
-                            
-                            TopicNode(
-                                topic: topic,
-                                color: topicColors[colorIndex % topicColors.count],
-                                size: nodeSize
-                            )
-                            .position(adjusted)
-                            .onTapGesture {
-                                let impact = UIImpactFeedbackGenerator(style: .light)
-                                impact.impactOccurred()
-                                selectedTopic = topic
+                    
+                    // Draw nodes
+                    for topic in topics {
+                        if let resolvedView = context.resolveSymbol(id: topic.name) {
+                            if let position = nodePositions[topic.name] {
+                                let adjusted = adjustedPoint(position, offset: offset, scale: scale, center: center)
+                                context.draw(resolvedView, at: adjusted)
                             }
-                            .gesture(
-                                DragGesture()
-                                    .onChanged { value in
-                                        currentDragNode = topic.name
-                                        nodePositions[topic.name] = CGPoint(
-                                            x: (value.location.x - center.x - offset.width) / scale,
-                                            y: (value.location.y - center.y - offset.height) / scale
-                                        )
-                                    }
-                                    .onEnded { _ in
-                                        currentDragNode = nil
-                                    }
-                            )
                         }
+                    }
+                } symbols: {
+                    ForEach(topics) { topic in
+                        let nodeSize = nodeSizeFor(importance: topic.importance ?? 5)
+                        let colorIndex = topics.firstIndex(where: { $0.name == topic.name }) ?? 0
+                        TopicNode(
+                            topic: topic,
+                            color: topicColors[colorIndex % topicColors.count],
+                            size: nodeSize
+                        )
+                        .tag(topic.name)
                     }
                 }
-            }
-            .gesture(
-                // Pan gesture
-                DragGesture()
-                    .onChanged { value in
-                        if currentDragNode == nil {
-                            offset = CGSize(
-                                width: lastOffset.width + value.translation.width,
-                                height: lastOffset.height + value.translation.height
-                            )
+                .gesture(
+                    // Pan gesture & Node hit-testing drag
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            if let dragNode = currentDragNode {
+                                // Moving a specific node
+                                nodePositions[dragNode] = CGPoint(
+                                    x: (value.location.x - center.x - offset.width) / scale,
+                                    y: (value.location.y - center.y - offset.height) / scale
+                                )
+                            } else {
+                                // If we just started, check if we hit a node
+                                if let hitTopic = nodeAt(point: value.startLocation, scale: scale, offset: offset, center: center) {
+                                    currentDragNode = hitTopic.name
+                                } else {
+                                    // Otherwise pan the whole canvas
+                                    offset = CGSize(
+                                        width: lastOffset.width + value.translation.width,
+                                        height: lastOffset.height + value.translation.height
+                                    )
+                                }
+                            }
                         }
-                    }
-                    .onEnded { _ in
-                        lastOffset = offset
-                    }
-            )
+                        .onEnded { value in
+                            if let dragNode = currentDragNode {
+                                // Treat very short drags as taps
+                                let dist = sqrt(value.translation.width * value.translation.width + value.translation.height * value.translation.height)
+                                if dist < 10 {
+                                    if let tappedTopic = topics.first(where: { $0.name == dragNode }) {
+                                        let impact = UIImpactFeedbackGenerator(style: .light)
+                                        impact.impactOccurred()
+                                        selectedTopic = tappedTopic
+                                    }
+                                }
+                                currentDragNode = nil
+                            } else {
+                                lastOffset = offset
+                            }
+                        }
+                )
+            }
             .gesture(
                 // Pinch to zoom
                 MagnifyGesture()
@@ -238,6 +247,22 @@ struct TopicGraphView: View {
         let base: CGFloat = 50
         let scale: CGFloat = CGFloat(importance) * 5
         return base + scale
+    }
+    
+    private func nodeAt(point: CGPoint, scale: CGFloat, offset: CGSize, center: CGPoint) -> APIService.TopicData? {
+        // Search in reverse so nodes drawn last (on top) are hit first
+        for topic in topics.reversed() {
+            guard let pos = nodePositions[topic.name] else { continue }
+            let adjusted = adjustedPoint(pos, offset: offset, scale: scale, center: center)
+            let radius = nodeSizeFor(importance: topic.importance ?? 5) / 2
+            
+            let dx = point.x - adjusted.x
+            let dy = point.y - adjusted.y
+            if dx * dx + dy * dy <= radius * radius {
+                return topic
+            }
+        }
+        return nil
     }
 }
 

@@ -11,26 +11,63 @@ struct KnowledgeMapView: View {
     @State private var errorMessage: String?
     @State private var showGraphView = false
     @State private var selectedTopic: APIService.TopicData?
+    @State private var searchText = ""
     
-    private var topics: [APIService.TopicData] {
+    private var allTopics: [APIService.TopicData] {
         mapResponse?.knowledgeMap?.topics ?? []
     }
     
-    private var connections: [APIService.TopicConnectionData] {
+    private var topics: [APIService.TopicData] {
+        if searchText.isEmpty {
+            return allTopics
+        } else {
+            return allTopics.filter { topic in
+                topic.name.localizedCaseInsensitiveContains(searchText) ||
+                topic.description.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+    }
+    
+    private var allConnections: [APIService.TopicConnectionData] {
         mapResponse?.knowledgeMap?.connections ?? []
+    }
+    
+    private var connections: [APIService.TopicConnectionData] {
+        if searchText.isEmpty {
+            return allConnections
+        } else {
+            let filteredTopicNames = Set(topics.map { $0.name })
+            return allConnections.filter { 
+                filteredTopicNames.contains($0.from) || filteredTopicNames.contains($0.to) 
+            }
+        }
     }
     
     // Graph view renders only the top topics by importance to avoid iOS OOM
     private let graphTopicLimit = 25
     
     private var graphTopics: [APIService.TopicData] {
-        let sorted = topics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
-        return Array(sorted.prefix(graphTopicLimit))
+        if searchText.isEmpty {
+            let sorted = topics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
+            return Array(sorted.prefix(graphTopicLimit))
+        } else {
+            // Include matching topics AND their 1-hop neighbors for context
+            var includedNames = Set(topics.map { $0.name })
+            
+            for conn in allConnections {
+                if includedNames.contains(conn.from) { includedNames.insert(conn.to) }
+                else if includedNames.contains(conn.to) { includedNames.insert(conn.from) }
+            }
+            
+            let expandedTopics = allTopics.filter { includedNames.contains($0.name) }
+            let sorted = expandedTopics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
+            return Array(sorted.prefix(graphTopicLimit))
+        }
     }
     
     private var graphConnections: [APIService.TopicConnectionData] {
         let graphTopicNames = Set(graphTopics.map { $0.name })
-        return connections.filter { graphTopicNames.contains($0.from) && graphTopicNames.contains($0.to) }
+        return allConnections.filter { graphTopicNames.contains($0.from) && graphTopicNames.contains($0.to) }
     }
     
     var body: some View {
@@ -82,8 +119,9 @@ struct KnowledgeMapView: View {
                 }
             }
             .sheet(item: $selectedTopic) { topic in
-                TopicDetailSheet(topic: topic, connections: connections)
+                TopicDetailSheet(topic: topic, connections: allConnections)
             }
+            .searchable(text: $searchText, prompt: "Search topics or descriptions...")
             .task {
                 await loadMap()
             }
@@ -539,9 +577,21 @@ struct TopicDetailSheet: View {
                                         .font(.subheadline)
                                     
                                     if let source = fact.sourceTitle, !source.isEmpty {
-                                        Text("from \(source)")
-                                            .font(.caption)
+                                        Button {
+                                            if let videoId = fact.sourceVideoId, !videoId.isEmpty,
+                                               let url = URL(string: "https://www.youtube.com/watch?v=\(videoId)") {
+                                                UIApplication.shared.open(url)
+                                            }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "play.rectangle.fill")
+                                                    .font(.caption2)
+                                                Text("from \(source)")
+                                                    .font(.caption)
+                                                    .multilineTextAlignment(.leading)
+                                            }
                                             .foregroundStyle(.purple)
+                                        }
                                     }
                                 }
                                 .padding(.vertical, 4)

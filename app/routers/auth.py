@@ -406,6 +406,17 @@ async def notion_auth_callback(code: str, state: str):
                                     ]
                                 }
                             },
+                            "Tags": {"multi_select": {}},
+                            "Summary Format": {
+                                "select": {
+                                    "options": [
+                                        {"name": "Detailed", "color": "blue"},
+                                        {"name": "Short", "color": "yellow"},
+                                        {"name": "Actionable", "color": "red"}
+                                    ]
+                                }
+                            },
+                            "Language": {"select": {}},
                             "Date Added": {"date": {}}
                         }
                     )

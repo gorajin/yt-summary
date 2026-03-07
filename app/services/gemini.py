@@ -12,7 +12,7 @@ import urllib.request
 from typing import List
 
 from ..config import GEMINI_API_KEY, GEMINI_API_ENDPOINT
-from ..models import ContentType, LectureNotes, TranscriptSegment
+from ..models import ContentType, LectureNotes, TranscriptSegment, SummaryFormat
 
 
 def call_gemini_api(prompt: str, max_retries: int = 3, timeout: int = 180) -> dict:
@@ -120,13 +120,21 @@ def detect_content_type(transcript: str, title: str) -> ContentType:
     return ContentType.GENERAL
 
 
-def _build_lecture_prompt(transcript: str, content_type: ContentType, word_count: int) -> str:
-    """Build specialized prompt based on content type."""
+def _build_lecture_prompt(
+    transcript: str, 
+    content_type: ContentType, 
+    word_count: int,
+    summary_format: SummaryFormat = SummaryFormat.DETAILED,
+    language: str = "en"
+) -> str:
+    """Build specialized prompt based on content type, format, and language."""
     approx_minutes = word_count // 150
     
     # Base context
     context = f"""VIDEO LENGTH: Approximately {approx_minutes} minutes ({word_count:,} words)
 CONTENT TYPE: {content_type.value}
+TARGET LANGUAGE: {language} (You MUST generate the entire JSON response translated into this language, except for JSON keys)
+SUMMARY FORMAT: {summary_format.value}
 
 TRANSCRIPT:
 {transcript}
@@ -188,6 +196,11 @@ You are creating comprehensive NOTES from this video. Extract:
 
 Be thorough - capture all important information."""
 
+    if summary_format == SummaryFormat.SHORT:
+        instructions += "\n\nCRITICAL: The user requested a SHORT executive summary. Be extremely concise. Limit details to only the absolute most important points."
+    elif summary_format == SummaryFormat.ACTIONABLE:
+        instructions += "\n\nCRITICAL: The user requested an ACTIONABLE summary. Focus heavily on main concepts, action items, and resources. Omit fluff."
+
     # Output format specification
     output_format = """
 Respond in this EXACT JSON format (no markdown, just raw JSON):
@@ -212,7 +225,8 @@ Respond in this EXACT JSON format (no markdown, just raw JSON):
   ],
   "resourcesMentioned": ["Book, website, or tool 1", "Resource 2"],
   "actionItems": ["Action 1", "Action 2"],
-  "questionsRaised": ["Open question 1", "Question 2"]
+  "questionsRaised": ["Open question 1", "Question 2"],
+  "tags": ["Tag1", "Tag2", "Tag3"]
 }
 
 GUIDELINES:
@@ -222,13 +236,20 @@ GUIDELINES:
 - Capture content from the ENTIRE video, not just the beginning
 - Include TIMESTAMPS (MM:SS format) when the topic/insight appears in the video
 - Include specific details, numbers, names when mentioned
+- Generate 3-5 relevant tags for the 'tags' array to categorize this content
 - Empty arrays are fine if that section doesn't apply
 """
 
     return context + instructions + output_format
 
 
-def _build_timestamped_prompt(segments: List[TranscriptSegment], content_type: ContentType, video_id: str = "") -> str:
+def _build_timestamped_prompt(
+    segments: List[TranscriptSegment], 
+    content_type: ContentType, 
+    video_id: str = "",
+    summary_format: SummaryFormat = SummaryFormat.DETAILED,
+    language: str = "en"
+) -> str:
     """Build prompt with timestamped transcript for precise references.
     
     Formats the transcript to include timestamps every ~30 seconds,
@@ -265,6 +286,8 @@ def _build_timestamped_prompt(segments: List[TranscriptSegment], content_type: C
 - Duration: {duration_str} (approximately {approx_minutes} minutes of spoken content)
 - Word count: {word_count:,} words
 - Content type: {content_type.value}
+- Target Language: {language}
+- Summary Format: {summary_format.value}
 {f"- Video ID: {video_id}" if video_id else ""}
 
 TIMESTAMPED TRANSCRIPT:
@@ -328,6 +351,12 @@ You are creating comprehensive NOTES from this video. Extract:
 5. Any calls to action or recommendations
 
 Be thorough - capture all important information with timestamps."""
+    if summary_format == SummaryFormat.SHORT:
+        instructions += "\n\nCRITICAL: The user requested a SHORT executive summary. Be extremely concise."
+    elif summary_format == SummaryFormat.ACTIONABLE:
+        instructions += "\n\nCRITICAL: The user requested an ACTIONABLE summary. Focus heavily on main concepts, action items, and resources."
+
+    instructions += f"\n\nCRITICAL LANGUAGE REQUIREMENT: All text values MUST be translated into {language}, but keep the exact JSON keys in English."
 
     output_format = """
 Respond in this EXACT JSON format (no markdown, just raw JSON):
@@ -352,7 +381,7 @@ Respond in this EXACT JSON format (no markdown, just raw JSON):
   ],
   "resourcesMentioned": ["Book or resource 1"],
   "actionItems": ["Action 1"],
-  "questionsRaised": ["Question 1"]
+  "tags": ["Tag1", "Tag2", "Tag3"]
 }
 
 CRITICAL TIMESTAMP INSTRUCTIONS:
@@ -361,12 +390,18 @@ CRITICAL TIMESTAMP INSTRUCTIONS:
 - Key insights and concepts should have timestamps when they first appear
 - Notable quotes MUST have timestamps
 - Format: "MM:SS" (e.g., "5:30", "1:15:00" for longer videos)
+- Generate 3-5 relevant categorizing tags in the 'tags' array
 """
 
     return context + instructions + output_format
 
 
-def generate_lecture_notes(transcript: str, title: str = "") -> LectureNotes:
+def generate_lecture_notes(
+    transcript: str, 
+    title: str = "",
+    summary_format: SummaryFormat = SummaryFormat.DETAILED,
+    language: str = "en"
+) -> LectureNotes:
     """Generate comprehensive lecture notes from transcript.
     
     This is the new core summarization engine that produces detailed,
@@ -383,7 +418,7 @@ def generate_lecture_notes(transcript: str, title: str = "") -> LectureNotes:
     print(f"  → Detected content type: {content_type.value}")
     
     # Build specialized prompt
-    prompt = _build_lecture_prompt(transcript_text, content_type, word_count)
+    prompt = _build_lecture_prompt(transcript_text, content_type, word_count, summary_format, language)
     
     # Call Gemini API with retry logic
     result = call_gemini_api(prompt)
@@ -409,7 +444,8 @@ def generate_lecture_notes(transcript: str, title: str = "") -> LectureNotes:
             notable_quotes=data.get("notableQuotes", []),
             resources_mentioned=data.get("resourcesMentioned", []),
             action_items=data.get("actionItems", []),
-            questions_raised=data.get("questionsRaised", [])
+            questions_raised=data.get("questionsRaised", []),
+            tags=data.get("tags", [])
         )
     except json.JSONDecodeError as e:
         print(f"  ⚠ JSON parsing failed: {e}")
@@ -425,7 +461,9 @@ def generate_lecture_notes(transcript: str, title: str = "") -> LectureNotes:
 def generate_lecture_notes_from_segments(
     segments: List[TranscriptSegment], 
     title: str = "",
-    video_id: str = ""
+    video_id: str = "",
+    summary_format: SummaryFormat = SummaryFormat.DETAILED,
+    language: str = "en"
 ) -> LectureNotes:
     """Generate comprehensive lecture notes from timestamped transcript segments.
     
@@ -452,7 +490,7 @@ def generate_lecture_notes_from_segments(
     print(f"  → Processing {len(segments)} timestamped segments")
     
     # Build timestamped prompt
-    prompt = _build_timestamped_prompt(segments, content_type, video_id)
+    prompt = _build_timestamped_prompt(segments, content_type, video_id, summary_format, language)
     
     # Truncate prompt if too long (keep ~200k chars for transcript)
     max_prompt_length = 250000
@@ -495,13 +533,14 @@ def generate_lecture_notes_from_segments(
             notable_quotes=processed_quotes,
             resources_mentioned=data.get("resourcesMentioned", []),
             action_items=data.get("actionItems", []),
-            questions_raised=data.get("questionsRaised", [])
+            questions_raised=data.get("questionsRaised", []),
+            tags=data.get("tags", [])
         )
     except json.JSONDecodeError as e:
         print(f"  ⚠ JSON parsing failed: {e}")
         # Fallback to non-timestamped version
         print("  → Falling back to generate_lecture_notes")
-        return generate_lecture_notes(flat_text, title)
+        return generate_lecture_notes(flat_text, title, summary_format, language)
 
 
 # ============ Long-Form Chunked Processing ============
@@ -545,7 +584,9 @@ def _generate_notes_for_chunk(
     chunk_index: int, 
     total_chunks: int,
     title: str,
-    video_id: str
+    video_id: str,
+    summary_format: SummaryFormat,
+    language: str
 ) -> LectureNotes:
     """Generate notes for a single chunk of a long video.
     
@@ -559,7 +600,9 @@ def _generate_notes_for_chunk(
     # Modify title to indicate chunk
     chunk_title = f"{title} (Part {chunk_index + 1}/{total_chunks})"
     
-    return generate_lecture_notes_from_segments(segments, chunk_title, video_id)
+    return generate_lecture_notes_from_segments(
+        segments, chunk_title, video_id, summary_format, language
+    )
 
 
 def _synthesize_notes(chunk_notes: List[LectureNotes], original_title: str) -> LectureNotes:
@@ -617,14 +660,17 @@ def _synthesize_notes(chunk_notes: List[LectureNotes], original_title: str) -> L
         notable_quotes=merge_lists("notable_quotes", 12),
         resources_mentioned=merge_lists("resources_mentioned", 15),
         action_items=merge_lists("action_items", 10),
-        questions_raised=merge_lists("questions_raised", 8)
+        questions_raised=merge_lists("questions_raised", 8),
+        tags=merge_lists("tags", 10)
     )
 
 
 def process_long_transcript(
     segments: List[TranscriptSegment], 
     title: str = "",
-    video_id: str = ""
+    video_id: str = "",
+    summary_format: SummaryFormat = SummaryFormat.DETAILED,
+    language: str = "en"
 ) -> LectureNotes:
     """Process very long transcripts (2+ hours) by chunking and synthesizing.
     
@@ -651,7 +697,7 @@ def process_long_transcript(
     # (200k chars handles ~80 minutes well)
     if total_minutes < 90:
         print(f"  → Video is {total_minutes:.0f} min, using standard processing")
-        return generate_lecture_notes_from_segments(segments, title, video_id)
+        return generate_lecture_notes_from_segments(segments, title, video_id, summary_format, language)
     
     print(f"  → Long video detected ({total_minutes:.0f} min), using chunked processing")
     
@@ -662,7 +708,7 @@ def process_long_transcript(
     # Process each chunk
     chunk_notes = []
     for i, chunk in enumerate(chunks):
-        notes = _generate_notes_for_chunk(chunk, i, len(chunks), title, video_id)
+        notes = _generate_notes_for_chunk(chunk, i, len(chunks), title, video_id, summary_format, language)
         chunk_notes.append(notes)
     
     # Synthesize all chunk notes

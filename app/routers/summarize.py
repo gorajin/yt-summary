@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 
-from ..models import SummarizeRequest, SummarizeResponse, IngestRequest, TranscriptSegment, SourceType
+from ..models import SummarizeRequest, SummarizeResponse, IngestRequest, TranscriptSegment, SourceType, SummaryFormat
 from ..services.youtube import extract_video_id, get_transcript_with_timestamps
 from ..services.gemini import process_long_transcript
 from ..services.notion import create_lecture_notes_page
@@ -67,7 +67,9 @@ async def process_summarization_job(
     user: dict,
     url: str,
     transcript: Optional[str],
-    video_id: str
+    video_id: str,
+    summary_format: SummaryFormat = SummaryFormat.DETAILED,
+    language: str = "en"
 ):
     """Background task to process a summarization job.
     
@@ -105,7 +107,13 @@ async def process_summarization_job(
         # Stage 3: Summarization (50-85%) - longest stage
         await update_job(job_id, progress=50, stage="Generating summary")
         logger.info(f"Job {job_id[:8]}: Generating lecture notes")
-        notes = process_long_transcript(segments, video_title, video_id)
+        notes = process_long_transcript(
+            segments=segments,
+            title=video_title,
+            video_id=video_id,
+            summary_format=summary_format,
+            language=language
+        )
         await update_job(job_id, progress=85, stage="Summary complete")
         logger.info(f"Job {job_id[:8]}: Generated: {notes.title}")
         
@@ -119,7 +127,9 @@ async def process_summarization_job(
                 database_id=database_id,
                 notes=notes,
                 video_url=f"https://youtu.be/{video_id}",
-                video_id=video_id
+                video_id=video_id,
+                summary_format=summary_format.value,
+                language=language
             )
         else:
             logger.info(f"Job {job_id[:8]}: Notion not connected, skipping")
@@ -139,6 +149,8 @@ async def process_summarization_job(
                 "youtube_url": url,
                 "title": notes.title,
                 "notion_url": notion_url,
+                "summary_format": summary_format.value,
+                "language": language
             }
             result = supabase.table("summaries").insert(summary_data).execute()
             if result.data:
@@ -207,7 +219,9 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
                 user=user,
                 url=body.url,
                 transcript=body.transcript,
-                video_id=video_id
+                video_id=video_id,
+                summary_format=body.summary_format,
+                language=body.language
             )
         )
         
@@ -236,6 +250,8 @@ async def process_ingest_job(
     url: str,
     source_type: SourceType,
     content: Optional[str] = None,
+    summary_format: SummaryFormat = SummaryFormat.DETAILED,
+    language: str = "en"
 ):
     """Background task to process a non-YouTube content ingestion job."""
     from ..services.extractors import extract_content
@@ -252,7 +268,13 @@ async def process_ingest_job(
         
         # Stage 2: Summarization (30-85%)
         await update_job(job_id, progress=40, stage="Generating summary")
-        notes = process_long_transcript(segments, title, video_id="")
+        notes = process_long_transcript(
+            segments=segments,
+            title=title,
+            video_id="",
+            summary_format=summary_format,
+            language=language
+        )
         await update_job(job_id, progress=85, stage="Summary complete")
         logger.info(f"Job {job_id[:8]}: Generated: {notes.title}")
         
@@ -265,7 +287,9 @@ async def process_ingest_job(
                 database_id=database_id,
                 notes=notes,
                 video_url=url,
-                video_id=""
+                video_id="",
+                summary_format=summary_format.value,
+                language=language
             )
         else:
             await update_job(job_id, progress=90, stage="Saving summary")
@@ -284,6 +308,11 @@ async def process_ingest_job(
                 "youtube_url": url,
                 "title": notes.title,
                 "notion_url": notion_url,
+                "content_type": detected_type.value,
+                "source_type": source_type.value,
+                "source_url": url,
+                "summary_format": summary_format.value,
+                "language": language
             }
             result = supabase.table("summaries").insert(summary_data).execute()
             if result.data:
@@ -348,6 +377,8 @@ async def ingest(request: Request, body: IngestRequest, user: dict = Depends(get
                 url=body.url,
                 source_type=source_type,
                 content=body.content,
+                summary_format=body.summary_format,
+                language=body.language
             )
         )
         

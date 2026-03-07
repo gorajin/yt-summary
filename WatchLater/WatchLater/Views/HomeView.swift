@@ -8,6 +8,9 @@ struct HomeView: View {
     @State private var showingSettings = false
     @State private var showingPaywall = false
     
+    @AppStorage("summaryFormat") private var summaryFormat: String = "detailed"
+    @AppStorage("summaryLanguage") private var summaryLanguage: String = "en"
+    
     /// Extract video ID using shared logic (no more duplication)
     private var videoId: String? {
         TranscriptExtractor.extractVideoId(from: urlInput)
@@ -58,7 +61,26 @@ struct HomeView: View {
                                 .foregroundStyle(.secondary)
                             TextField("Paste YouTube URL", text: $urlInput)
                                 .autocapitalization(.none)
+                                .autocorrectionDisabled(true)
                                 .keyboardType(.URL)
+                                
+                            if !urlInput.isEmpty {
+                                Button(action: { urlInput = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Button(action: {
+                                    if let string = UIPasteboard.general.string {
+                                        urlInput = string
+                                    }
+                                }) {
+                                    Text("Paste")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(.red)
+                                }
+                            }
                         }
                         .padding()
                         .background(.white)
@@ -98,7 +120,57 @@ struct HomeView: View {
                                 
                                 Spacer()
                             }
+                            }
                             .padding(.horizontal, 4)
+                            
+                            // Configuration Options
+                            HStack {
+                                Menu {
+                                    Picker("Format", selection: $summaryFormat) {
+                                        Text("Detailed").tag("detailed")
+                                        Text("Short").tag("short")
+                                        Text("Actionable").tag("actionable")
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "doc.text")
+                                        Text(summaryFormat.capitalized)
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.caption2)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(8)
+                                }
+                                
+                                Menu {
+                                    Picker("Language", selection: $summaryLanguage) {
+                                        Text("English").tag("en")
+                                        Text("Spanish").tag("es")
+                                        Text("French").tag("fr")
+                                        Text("German").tag("de")
+                                        Text("Korean").tag("ko")
+                                        Text("Japanese").tag("ja")
+                                        Text("Chinese").tag("zh")
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "globe")
+                                        Text(languageDisplayName(for: summaryLanguage))
+                                        Image(systemName: "chevron.up.chevron.down")
+                                            .font(.caption2)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(8)
+                                }
+                                
+                                Spacer()
+                            }
+                            .foregroundStyle(.primary)
+                            .font(.subheadline)
                         }
                         
                         // Summarize Button with Progress UI
@@ -289,10 +361,23 @@ struct HomeView: View {
         impactFeedback.impactOccurred()
         
         Task {
-            await viewModel.summarize(url: urlInput, token: authManager.accessToken ?? "")
+            await viewModel.summarize(url: urlInput, token: authManager.accessToken ?? "", summaryFormat: summaryFormat, language: summaryLanguage)
             if viewModel.isSuccess {
                 urlInput = ""
             }
+        }
+    }
+    
+    private func languageDisplayName(for code: String) -> String {
+        switch code {
+        case "en": return "English"
+        case "es": return "Spanish"
+        case "fr": return "French"
+        case "de": return "German"
+        case "ko": return "Korean"
+        case "ja": return "Japanese"
+        case "zh": return "Chinese"
+        default: return "English"
         }
     }
 }
@@ -429,7 +514,7 @@ struct ShimmerModifier: ViewModifier {
                     LinearGradient(
                         colors: [
                             .clear,
-                            Color.white.opacity(0.4),
+                            Color.primary.opacity(0.1),
                             .clear
                         ],
                         startPoint: .leading,

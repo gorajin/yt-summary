@@ -175,9 +175,34 @@ struct SummaryRow: View {
                     .fontWeight(.medium)
                     .lineLimit(2)
                 
-                Text(formattedDate)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(formattedDate)
+                    
+                    if let format = summary.summaryFormat, let lang = summary.language {
+                        Text("•")
+                        HStack(spacing: 2) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 8))
+                            Text(format.capitalized)
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(4)
+                        
+                        HStack(spacing: 2) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 8))
+                            Text(lang.uppercased())
+                        }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(4)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
             
             Spacer()
@@ -220,6 +245,8 @@ struct SummaryHistoryItem: Codable, Identifiable {
     let youtubeUrl: String
     let title: String?
     let notionUrl: String?
+    let summaryFormat: String?
+    let language: String?
     let createdAt: String
     
     enum CodingKeys: String, CodingKey {
@@ -227,6 +254,8 @@ struct SummaryHistoryItem: Codable, Identifiable {
         case youtubeUrl = "youtube_url"
         case title
         case notionUrl = "notion_url"
+        case summaryFormat = "summary_format"
+        case language
         case createdAt = "created_at"
     }
 }

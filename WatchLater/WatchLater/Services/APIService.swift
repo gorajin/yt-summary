@@ -10,11 +10,37 @@ class APIService {
     static let shared = APIService()
     private init() {}
     
+    // MARK: - Dynamic Configuration
+    
+    func getExtractionConfig(authToken: String) async throws -> ExtractionConfig {
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/config/extraction")!
+        
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+        
+        if httpResponse.statusCode != 200 {
+            throw APIError.serverError("Failed to fetch extraction config (\(httpResponse.statusCode))")
+        }
+        
+        return try JSONDecoder().decode(ExtractionConfig.self, from: data)
+    }
+    
     // MARK: - Summarize (Async Polling Architecture)
     
-    func summarize(url: String, transcript: String? = nil, authToken: String) async throws -> SummaryResponse {
+    func summarize(url: String, transcript: String? = nil, authToken: String, summaryFormat: String = "detailed", language: String = "en") async throws -> SummaryResponse {
         // Step 1: Initiate job (also returns remaining count from 202 response)
-        let (jobId, remaining) = try await initiateJob(url: url, transcript: transcript, authToken: authToken)
+        let (jobId, remaining) = try await initiateJob(url: url, transcript: transcript, authToken: authToken, summaryFormat: summaryFormat, language: language)
         
         // Step 2: Poll for completion
         var response = try await pollJobStatus(jobId: jobId, authToken: authToken)
@@ -33,7 +59,7 @@ class APIService {
     
     /// Initiate a summarization job and return job_id
     /// Initiate a summarization job and return (job_id, remaining_count)
-    private func initiateJob(url: String, transcript: String?, authToken: String) async throws -> (String, Int?) {
+    private func initiateJob(url: String, transcript: String?, authToken: String, summaryFormat: String = "detailed", language: String = "en") async throws -> (String, Int?) {
         let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summarize")!
         
         var request = URLRequest(url: endpoint)
@@ -42,7 +68,11 @@ class APIService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         
-        var bodyDict: [String: String] = ["url": url]
+        var bodyDict: [String: String] = [
+            "url": url,
+            "summary_format": summaryFormat,
+            "language": language
+        ]
         if let transcript = transcript {
             bodyDict["transcript"] = transcript
         }

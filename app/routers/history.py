@@ -33,6 +33,8 @@ class SummaryItem(BaseModel):
     source_type: Optional[str] = None
     source_url: Optional[str] = None
     notion_url: Optional[str] = None
+    summary_format: Optional[str] = None
+    language: Optional[str] = None
     created_at: str
 
 
@@ -48,6 +50,8 @@ class SummaryDetail(BaseModel):
     source_url: Optional[str] = None
     summary_json: Optional[dict] = None
     notion_url: Optional[str] = None
+    summary_format: Optional[str] = None
+    language: Optional[str] = None
     created_at: str
 
 
@@ -66,7 +70,7 @@ async def get_summaries(
     try:
         query = (
             supabase.table("summaries")
-            .select("id, youtube_url, title, notion_url, created_at")
+            .select("id, youtube_url, title, notion_url, content_type, source_type, summary_format, language, created_at")
             .eq("user_id", user["id"])
         )
         
@@ -102,7 +106,7 @@ async def get_summary_detail(
     try:
         result = (
             supabase.table("summaries")
-            .select("id, youtube_url, title, notion_url, created_at")
+            .select("id, youtube_url, title, notion_url, content_type, source_type, summary_json, summary_format, language, created_at")
             .eq("id", summary_id)
             .eq("user_id", user["id"])
             .execute()

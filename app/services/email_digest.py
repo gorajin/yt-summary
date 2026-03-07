@@ -7,6 +7,7 @@ Designed to run as a cron job (hourly) via Railway.
 
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,8 +24,8 @@ RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "WatchLater <digest@watchlate
 APP_URL = os.getenv("APP_URL", "https://watchlater.app")
 
 
-def send_email(to: str, subject: str, html: str) -> bool:
-    """Send an email via Resend API.
+async def _send_email_async(client: httpx.AsyncClient, to: str, subject: str, html: str) -> bool:
+    """Send an email via Resend API using httpx.AsyncClient.
     
     Returns True if sent successfully, False otherwise.
     """
@@ -33,7 +34,7 @@ def send_email(to: str, subject: str, html: str) -> bool:
         return False
     
     try:
-        response = httpx.post(
+        response = await client.post(
             "https://api.resend.com/emails",
             json={
                 "from": RESEND_FROM_EMAIL,
@@ -51,6 +52,14 @@ def send_email(to: str, subject: str, html: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to send email to {to}: {e}")
         return False
+
+
+def send_email(to: str, subject: str, html: str) -> bool:
+    """Send an email via Resend API (synchronous legacy wrapper)."""
+    async def _run():
+        async with httpx.AsyncClient() as client:
+            return await _send_email_async(client, to, subject, html)
+    return asyncio.run(_run())
 
 
 def build_digest_html(summaries: list, user_email: str) -> str:
@@ -242,11 +251,55 @@ def get_todays_summaries(supabase_client, user_id: str) -> list:
         return []
 
 
+async def _process_digest_for_user(client: httpx.AsyncClient, supabase_client, user: dict) -> bool:
+    """Fetch summaries and send digest email for a single user."""
+    user_id = user["id"]
+    email = user.get("email")
+    
+    if not email:
+        return False
+    
+    # Run the synchronous supabase query in a separate thread to avoid blocking the event loop
+    summaries = await asyncio.to_thread(get_todays_summaries, supabase_client, user_id)
+    
+    if not summaries:
+        return False
+    
+    # Build and send digest
+    html = build_digest_html(summaries, email)
+    count = len(summaries)
+    subject = f"📚 Your Daily Learning Digest — {count} {'video' if count == 1 else 'videos'} summarized"
+    
+    return await _send_email_async(client, email, subject, html)
+
+
+async def _run_digests_parallel(supabase_client, users: list) -> int:
+    """Process all user digests in parallel."""
+    async with httpx.AsyncClient() as client:
+        tasks = [
+            _process_digest_for_user(client, supabase_client, user)
+            for user in users
+        ]
+        # Return exceptions explicitly so one failed request doesn't crash the entire batch
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Count successes
+        sent_count = 0
+        for result in results:
+            if isinstance(result, bool) and result:
+                sent_count += 1
+            elif isinstance(result, Exception):
+                logger.error(f"Unhandled exception in parallel digest task: {result}")
+                
+        return sent_count
+
+
 def send_daily_digests(supabase_client, current_hour: Optional[int] = None):
     """Main entry point for the digest cron job.
     
     Called hourly. Finds users whose preferred digest time matches
     the current hour, fetches their day's summaries, and sends emails.
+    Internally uses asyncio to process users concurrently.
     
     Args:
         supabase_client: Supabase client instance
@@ -260,30 +313,14 @@ def send_daily_digests(supabase_client, current_hour: Optional[int] = None):
     users = get_users_for_digest(supabase_client, current_hour)
     logger.info(f"Found {len(users)} users for digest at hour {current_hour}")
     
-    sent_count = 0
-    skip_count = 0
+    if not users:
+        logger.info("Daily digest complete: sent=0, skipped=0")
+        return 0
     
-    for user in users:
-        user_id = user["id"]
-        email = user.get("email")
-        
-        if not email:
-            skip_count += 1
-            continue
-        
-        summaries = get_todays_summaries(supabase_client, user_id)
-        
-        if not summaries:
-            skip_count += 1
-            continue
-        
-        # Build and send digest
-        html = build_digest_html(summaries, email)
-        count = len(summaries)
-        subject = f"📚 Your Daily Learning Digest — {count} {'video' if count == 1 else 'videos'} summarized"
-        
-        if send_email(email, subject, html):
-            sent_count += 1
+    # Run all users in parallel
+    sent_count = asyncio.run(_run_digests_parallel(supabase_client, users))
+    skip_count = len(users) - sent_count
         
     logger.info(f"Daily digest complete: sent={sent_count}, skipped={skip_count}")
     return sent_count
+

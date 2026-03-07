@@ -70,8 +70,8 @@ class ShareViewController: UIViewController {
         // Create SwiftUI view
         let shareView = ShareExtensionView(
             url: url,
-            onSave: { [weak self] in
-                self?.summarizeAndSave(url: url, token: token)
+            onSave: { [weak self] (summaryFormat, language) in
+                self?.summarizeAndSave(url: url, token: token, summaryFormat: summaryFormat, language: language)
             },
             onCancel: { [weak self] in
                 self?.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
@@ -95,7 +95,7 @@ class ShareViewController: UIViewController {
         hostingController.didMove(toParent: self)
     }
     
-    private func summarizeAndSave(url: String, token: String) {
+    private func summarizeAndSave(url: String, token: String, summaryFormat: String, language: String) {
         Task {
             do {
                 // Try client-side transcript extraction first (bypasses YouTube IP blocking)
@@ -153,12 +153,12 @@ class ShareViewController: UIViewController {
             }
             
             print("📱 Share: Token refreshed successfully, retrying...")
-            return try await initiateJob(url: url, token: newToken, transcript: transcript)
+            return try await initiateJob(url: url, token: newToken, transcript: transcript, summaryFormat: summaryFormat, language: language)
         }
     }
     
     /// Initiate a summarization job and return jobId
-    private func initiateJob(url: String, token: String, transcript: String) async throws -> String {
+    private func initiateJob(url: String, token: String, transcript: String, summaryFormat: String, language: String) async throws -> String {
         let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summarize")!
         
         var request = URLRequest(url: endpoint)
@@ -167,7 +167,12 @@ class ShareViewController: UIViewController {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = AppConfig.apiTimeout
         
-        let bodyDict: [String: String] = ["url": url, "transcript": transcript]
+        let bodyDict: [String: String] = [
+            "url": url, 
+            "transcript": transcript,
+            "summary_format": summaryFormat,
+            "language": language
+        ]
         request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -359,13 +364,16 @@ class ShareViewController: UIViewController {
 
 struct ShareExtensionView: View {
     let url: String
-    let onSave: () -> Void
+    let onSave: (String, String) -> Void
     let onCancel: () -> Void
     
     @State private var isLoading = false
     @State private var currentStage: SummarizationStage = .fetchingTranscript
     @State private var stageProgress: Double = 0.0
     @State private var progressTimer: Timer? = nil
+    
+    @AppStorage("summaryFormat") private var summaryFormat: String = "detailed"
+    @AppStorage("summaryLanguage") private var summaryLanguage: String = "en"
     
     private static let extractor = TranscriptExtractor()
     
@@ -459,6 +467,56 @@ struct ShareExtensionView: View {
                 .cornerRadius(12)
                 .padding(.horizontal)
                 
+                // Configuration Options
+                HStack {
+                    Menu {
+                        Picker("Format", selection: $summaryFormat) {
+                            Text("Detailed").tag("detailed")
+                            Text("Short").tag("short")
+                            Text("Actionable").tag("actionable")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.text")
+                            Text(summaryFormat.capitalized)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                    }
+                    
+                    Menu {
+                        Picker("Language", selection: $summaryLanguage) {
+                            Text("English").tag("en")
+                            Text("Spanish").tag("es")
+                            Text("French").tag("fr")
+                            Text("German").tag("de")
+                            Text("Korean").tag("ko")
+                            Text("Japanese").tag("ja")
+                            Text("Chinese").tag("zh")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                            Text(languageDisplayName(for: summaryLanguage))
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
+                    }
+                    
+                    Spacer()
+                }
+                .foregroundStyle(.primary)
+                .font(.subheadline)
+                .padding(.horizontal)
+                
                 // Save Button
                 Button(action: {
                     let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
@@ -466,7 +524,7 @@ struct ShareExtensionView: View {
                     
                     isLoading = true
                     startProgressSimulation()
-                    onSave()
+                    onSave(summaryFormat, summaryLanguage)
                 }) {
                     if isLoading {
                         VStack(spacing: 10) {
@@ -610,6 +668,19 @@ struct ShareExtensionView: View {
             if stageProgress < 0.95 {
                 stageProgress += 0.02
             }
+        }
+    }
+    
+    private func languageDisplayName(for code: String) -> String {
+        switch code {
+        case "en": return "English"
+        case "es": return "Spanish"
+        case "fr": return "French"
+        case "de": return "German"
+        case "ko": return "Korean"
+        case "ja": return "Japanese"
+        case "zh": return "Chinese"
+        default: return "English"
         }
     }
 }

@@ -38,19 +38,30 @@ class HomeViewModel: ObservableObject {
     func loadProfile(token: String) async {
         isLoadingProfile = true
         do {
-            let user = try await api.getProfile(authToken: token)
+            async let userTask = api.getProfile(authToken: token)
+            async let configTask = api.getExtractionConfig(authToken: token)
+            
+            // Wait for both concurrent requests
+            let (user, config) = try await (userTask, configTask)
+            
+            // Apply profile
             isNotionConnected = user.notionConnected
             summariesRemaining = user.summariesRemaining
+            
+            // Apply and persist config
+            config.save()
             print("Profile loaded: notionConnected=\(user.notionConnected)")
+            print("Extraction config loaded: v\(config.version) with \(config.captionTrackPatterns.count) patterns")
+            
         } catch {
-            print("Failed to load profile: \(error)")
+            print("Failed to load profile or config: \(error)")
         }
         isLoadingProfile = false
     }
     
     // MARK: - Summarize with Client-Side Transcript Fetching
     
-    func summarize(url: String, token: String) async {
+    func summarize(url: String, token: String, summaryFormat: String = "detailed", language: String = "en") async {
         isProcessing = true
         statusMessage = nil
         isSuccess = false
@@ -72,7 +83,7 @@ class HomeViewModel: ObservableObject {
             }
             
             // Call API with transcript (or without as fallback)
-            let response = try await api.summarize(url: url, transcript: transcript, authToken: token)
+            let response = try await api.summarize(url: url, transcript: transcript, authToken: token, summaryFormat: summaryFormat, language: language)
             
             // Stop progress timer
             stopProgressTimer()

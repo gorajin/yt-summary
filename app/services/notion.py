@@ -6,9 +6,30 @@ and legacy summary formats.
 """
 
 from datetime import date
+import logging
 from notion_client import Client as NotionClient
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 from ..models import ContentType, LectureNotes, KnowledgeMap
+
+logger = logging.getLogger(__name__)
+
+# Helpers for robust Notion API calls
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(4),
+    reraise=True
+)
+def _create_page_with_retry(notion: NotionClient, **kwargs):
+    return notion.pages.create(**kwargs)
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(4),
+    reraise=True
+)
+def _append_blocks_with_retry(notion: NotionClient, **kwargs):
+    return notion.blocks.children.append(**kwargs)
 
 
 def create_notion_page(notion_token: str, database_id: str, title: str, url: str, 
@@ -56,7 +77,8 @@ def create_notion_page(notion_token: str, database_id: str, title: str, url: str
             "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": insight}}]}
         })
     
-    response = notion.pages.create(
+    response = _create_page_with_retry(
+        notion,
         parent={"database_id": database_id},
         properties={
             "Title": {"title": [{"text": {"content": title}}]},
@@ -88,7 +110,9 @@ def _timestamp_to_link(timestamp_str: str, video_id: str) -> str:
 
 def create_lecture_notes_page(notion_token: str, database_id: str, 
                                notes: LectureNotes, video_url: str,
-                               video_id: str = "") -> str:
+                               video_id: str = "",
+                               summary_format: str = "",
+                               language: str = "") -> str:
     """Create a comprehensive Notion page with rich lecture notes formatting.
     
     Uses toggle blocks for collapsible sections, callouts for key insights,
@@ -367,16 +391,45 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
     if remaining_batches:
         print(f"  → Notion: {total_blocks} blocks, splitting into {1 + len(remaining_batches)} batches")
     
-    # Create page with first batch
-    response = notion.pages.create(
-        parent={"database_id": database_id},
-        properties={
-            "Title": {"title": [{"text": {"content": notes.title}}]},
-            "URL": {"url": video_url},
-            "Date Added": {"date": {"start": date.today().isoformat()}}
-        },
-        children=first_batch
-    )
+    # Define basic properties everyone has
+    basic_properties = {
+        "Title": {"title": [{"text": {"content": notes.title}}]},
+        "URL": {"url": video_url},
+        "Date Added": {"date": {"start": date.today().isoformat()}}
+    }
+    
+    # Optional dynamic properties
+    full_properties = basic_properties.copy()
+    if getattr(notes, "tags", None) and notes.tags:
+        full_properties["Tags"] = {"multi_select": [{"name": str(t)[:100]} for t in notes.tags[:7]]}
+    if getattr(notes, "content_type", None):
+        full_properties["Type"] = {"select": {"name": notes.content_type.value.title()[:100]}}
+    if summary_format:
+        full_properties["Summary Format"] = {"select": {"name": summary_format.title()[:100]}}
+    if language:
+        full_properties["Language"] = {"select": {"name": language.upper()[:100]}}
+        
+    try:
+        # Create page with first batch using full properties
+        response = _create_page_with_retry(
+            notion,
+            parent={"database_id": database_id},
+            properties=full_properties,
+            children=first_batch
+        )
+    except Exception as e:
+        error_str = str(e).lower()
+        # Fallback to basic properties if the schema doesn't exist on user's Notion DB
+        if "property" in error_str or "schema" in error_str or "400" in error_str:
+            print(f"  ⚠ Notion schema fallback: {e}")
+            response = _create_page_with_retry(
+                notion,
+                parent={"database_id": database_id},
+                properties=basic_properties,
+                children=first_batch
+            )
+        else:
+            raise
     
     page_id = response["id"]
     page_url = response["url"]
@@ -386,18 +439,20 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
         appended_blocks = len(first_batch)
         for batch_num, batch in enumerate(remaining_batches, start=2):
             try:
-                notion.blocks.children.append(
+                _append_blocks_with_retry(
+                    notion,
                     block_id=page_id,
                     children=batch
                 )
                 appended_blocks += len(batch)
-                print(f"  → Notion: Appended batch {batch_num}/{1 + len(remaining_batches)} ({len(batch)} blocks)")
+                logger.info(f"  → Notion: Appended batch {batch_num}/{1 + len(remaining_batches)} ({len(batch)} blocks)")
             except Exception as e:
                 # Log error but don't crash - page exists with partial content
-                print(f"  → Notion: Failed to append batch {batch_num}: {type(e).__name__}: {e}")
+                logger.error(f"  → Notion: Failed to append batch {batch_num}: {type(e).__name__}: {e}")
                 # Add a note that content was truncated
                 try:
-                    notion.blocks.children.append(
+                    _append_blocks_with_retry(
+                        notion,
                         block_id=page_id,
                         children=[{
                             "object": "block",
@@ -413,7 +468,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
                     pass  # Best effort - don't fail if we can't add the warning
                 break  # Stop trying additional batches after a failure
         
-        print(f"  → Notion: Successfully saved {appended_blocks}/{total_blocks} blocks")
+        logger.info(f"  → Notion: Successfully saved {appended_blocks}/{total_blocks} blocks")
     
     return page_url
 
@@ -435,7 +490,8 @@ def create_knowledge_map_page(notion_token: str, database_id: str,
     title_text = f"🗺️ Knowledge Map — {today_str}"
     
     # Create the page
-    page = notion.pages.create(
+    page = _create_page_with_retry(
+        notion,
         parent={"database_id": database_id},
         properties={
             "Title": {"title": [{"text": {"content": title_text}}]},
@@ -597,11 +653,11 @@ def create_knowledge_map_page(notion_token: str, database_id: str,
     for i in range(0, len(blocks), batch_size):
         batch = blocks[i:i + batch_size]
         try:
-            notion.blocks.children.append(block_id=page_id, children=batch)
+            _append_blocks_with_retry(notion, block_id=page_id, children=batch)
         except Exception as e:
-            print(f"  → Notion: Error appending batch {i // batch_size + 1}: {e}")
+            logger.error(f"  → Notion: Error appending batch {i // batch_size + 1}: {e}")
             break
     
-    print(f"  → Notion: Knowledge map page created with {len(blocks)} blocks")
+    logger.info(f"  → Notion: Knowledge map page created with {len(blocks)} blocks")
     return page_url
 

@@ -30,11 +30,20 @@ class ContentType(str, Enum):
     GENERAL = "general"        # Default fallback
 
 
+class SummaryFormat(str, Enum):
+    """Desired length and format for the summary result."""
+    SHORT = "short"          # Concise, executive summary style
+    DETAILED = "detailed"    # Long-form, comprehensive lecture notes
+    ACTIONABLE = "actionable" # Action items and main concepts only
+
+
 # ============ API Request/Response Models ============
 
 class SummarizeRequest(BaseModel):
     url: str
     transcript: Optional[str] = None  # Client-provided transcript (bypasses server fetch)
+    summary_format: Optional[SummaryFormat] = SummaryFormat.DETAILED
+    language: Optional[str] = "en"    # Target language for the output (e.g., "es", "ko")
 
 
 class IngestRequest(BaseModel):
@@ -42,6 +51,8 @@ class IngestRequest(BaseModel):
     url: str
     source_type: Optional[SourceType] = None  # Auto-detected if not provided
     content: Optional[str] = None  # Pre-extracted text content (e.g., PDF text from client)
+    summary_format: Optional[SummaryFormat] = SummaryFormat.DETAILED
+    language: Optional[str] = "en"
 
 
 class SummarizeResponse(BaseModel):
@@ -98,6 +109,7 @@ class LectureNotes:
     resources_mentioned: List[str] = field(default_factory=list)
     action_items: List[str] = field(default_factory=list)
     questions_raised: List[str] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)  # Auto-generated category tags
     
     # Legacy compatibility - for backward-compatible API responses
     def to_legacy_format(self) -> dict:
@@ -129,6 +141,7 @@ class LectureNotes:
             "resourcesMentioned": self.resources_mentioned,
             "actionItems": self.action_items,
             "questionsRaised": self.questions_raised,
+            "tags": self.tags,
         }
     
     @classmethod
@@ -146,6 +159,7 @@ class LectureNotes:
             resources_mentioned=data.get("resourcesMentioned", []),
             action_items=data.get("actionItems", []),
             questions_raised=data.get("questionsRaised", []),
+            tags=data.get("tags", []),
         )
 
 
