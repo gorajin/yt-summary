@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS public.users (
 -- Summaries log table
 CREATE TABLE IF NOT EXISTS public.summaries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     youtube_url TEXT NOT NULL,
     video_id TEXT,                                       -- YouTube video ID for deep links
     title TEXT,
@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS public.summaries (
     notion_url TEXT,                                     -- Notion page URL (optional)
     source_type TEXT DEFAULT 'youtube',                  -- youtube, article, pdf, podcast
     source_url TEXT,                                     -- Original source URL (for non-YouTube)
+    summary_format TEXT,                                 -- detailed, short, actionable
+    language TEXT DEFAULT 'en',                           -- ISO language code
     deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,    -- Soft delete timestamp
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -58,6 +60,9 @@ CREATE TABLE IF NOT EXISTS public.summaries (
 -- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS summary_json JSONB;
 -- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'youtube';
 -- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS source_url TEXT;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS summary_format TEXT;
+-- ALTER TABLE public.summaries ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';
+-- ALTER TABLE public.summaries ALTER COLUMN user_id SET NOT NULL;
 
 -- Function to increment summary count
 CREATE OR REPLACE FUNCTION increment_summaries(p_user_id UUID)
@@ -94,12 +99,15 @@ CREATE POLICY "Users can view own profile" ON public.users
 CREATE POLICY "Users can update own profile" ON public.users
     FOR UPDATE USING (auth.uid() = id);
 
--- Summaries policy
+-- Summaries policies
 CREATE POLICY "Users can view own summaries" ON public.summaries
     FOR SELECT USING (auth.uid() = user_id);
 
 CREATE POLICY "Users can insert own summaries" ON public.summaries
     FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own summaries" ON public.summaries
+    FOR UPDATE USING (auth.uid() = user_id);
 
 -- Service role bypass (for backend API)
 CREATE POLICY "Service role full access users" ON public.users
@@ -112,6 +120,76 @@ CREATE POLICY "Service role full access summaries" ON public.summaries
 CREATE INDEX IF NOT EXISTS idx_users_email ON public.users(email);
 CREATE INDEX IF NOT EXISTS idx_summaries_user_id ON public.summaries(user_id);
 CREATE INDEX IF NOT EXISTS idx_summaries_created_at ON public.summaries(created_at);
+CREATE INDEX IF NOT EXISTS idx_summaries_video_id ON public.summaries(video_id);
+-- Composite index for the most common query pattern: "user's non-deleted summaries by date"
+CREATE INDEX IF NOT EXISTS idx_summaries_user_deleted_created
+    ON public.summaries(user_id, deleted_at, created_at DESC);
+
+-- Jobs table (tracks async summarization jobs)
+CREATE TABLE IF NOT EXISTS public.jobs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    youtube_url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'complete', 'failed')),
+    progress INT DEFAULT 0,
+    stage TEXT DEFAULT 'queued',
+    result JSONB,
+    error TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE public.jobs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own jobs" ON public.jobs
+    FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Service role full access jobs" ON public.jobs
+    FOR ALL USING (auth.role() = 'service_role');
+
+CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON public.jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON public.jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON public.jobs(created_at);
+
+GRANT ALL ON public.jobs TO service_role;
+GRANT SELECT ON public.jobs TO authenticated;
+
+-- Function to clean up old completed/failed jobs
+CREATE OR REPLACE FUNCTION cleanup_old_jobs(max_age_hours INT DEFAULT 24)
+RETURNS INT AS $$
+DECLARE
+    deleted_count INT;
+BEGIN
+    DELETE FROM public.jobs
+    WHERE created_at < NOW() - (max_age_hours || ' hours')::INTERVAL
+      AND status IN ('complete', 'failed');
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Knowledge maps table (stores per-user cross-video topic maps)
+CREATE TABLE IF NOT EXISTS public.knowledge_maps (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE UNIQUE,
+    map_data JSONB NOT NULL,
+    version INT DEFAULT 1,
+    summary_count INT DEFAULT 0,
+    notion_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE public.knowledge_maps ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own knowledge map" ON public.knowledge_maps
+    FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Service role full access knowledge_maps" ON public.knowledge_maps
+    FOR ALL USING (auth.role() = 'service_role');
+
+GRANT ALL ON public.knowledge_maps TO service_role;
+GRANT SELECT ON public.knowledge_maps TO authenticated;
 
 -- Grant permissions
 GRANT ALL ON public.users TO service_role;
