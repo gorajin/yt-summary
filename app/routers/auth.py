@@ -105,7 +105,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         raise
     except Exception as e:
         logger.error(f"Auth validation failed: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed. Please sign in again.")
 
 
 def check_rate_limit(user: dict) -> int:

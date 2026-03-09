@@ -300,12 +300,12 @@ async def process_ingest_job(
         else:
             await update_job(job_id, progress=90, stage="Saving summary")
         
-        # Increment usage
+        # Increment usage (non-critical)
         try:
             increment_usage(user["id"])
-        except Exception:
-            pass
-        
+        except Exception as usage_err:
+            logger.warning(f"Job {job_id[:8]}: Usage increment failed: {usage_err}")
+
         # Store in Supabase
         summary_id = None
         try:
