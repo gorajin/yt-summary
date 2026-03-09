@@ -1,8 +1,11 @@
 import UIKit
 import SwiftUI
+import os.log
+
+private let shareLog = OSLog(subsystem: "com.watchlater.share", category: "ShareExtension")
 
 class ShareViewController: UIViewController {
-    
+
     private let transcriptExtractor = TranscriptExtractor(logPrefix: "📱 Share:")
     
     override func viewDidLoad() {
@@ -103,7 +106,7 @@ class ShareViewController: UIViewController {
                 
                 // If client-side fails, signal server to attempt extraction
                 if transcript == nil || transcript!.isEmpty {
-                    print("📱 Share: Client-side transcript failed, requesting server extraction")
+                    os_log("Client-side transcript failed, requesting server extraction", log: shareLog, type: .info)
                     transcript = "__SERVER_EXTRACT__"
                     
                     await MainActor.run {
@@ -140,19 +143,19 @@ class ShareViewController: UIViewController {
         do {
             return try await initiateJob(url: url, token: token, transcript: transcript)
         } catch let error as NSError where error.code == 401 {
-            print("📱 Share: Token expired, attempting refresh...")
+            os_log("Token expired, attempting refresh", log: shareLog, type: .info)
             
             guard let refreshToken = KeychainHelper.get(forKey: "supabase_refresh_token") else {
-                print("📱 Share: No refresh token available")
+                os_log("No refresh token available", log: shareLog, type: .error)
                 throw error
             }
             
             guard let newToken = await refreshAccessToken(refreshToken: refreshToken) else {
-                print("📱 Share: Token refresh failed")
+                os_log("Token refresh failed", log: shareLog, type: .error)
                 throw error
             }
             
-            print("📱 Share: Token refreshed successfully, retrying...")
+            os_log("Token refreshed successfully, retrying", log: shareLog, type: .info)
             return try await initiateJob(url: url, token: newToken, transcript: transcript, summaryFormat: summaryFormat, language: language)
         }
     }
@@ -182,7 +185,7 @@ class ShareViewController: UIViewController {
                 userInfo: [NSLocalizedDescriptionKey: "Invalid server response"])
         }
         
-        print("📱 Share: Initiate job response: \(httpResponse.statusCode)")
+        os_log("Initiate job response: %d", log: shareLog, type: .info, httpResponse.statusCode)
         
         if httpResponse.statusCode == 401 {
             throw NSError(domain: "WatchLater", code: 401,
@@ -211,7 +214,7 @@ class ShareViewController: UIViewController {
                 userInfo: [NSLocalizedDescriptionKey: "Invalid job response"])
         }
         
-        print("📱 Share: Job created: \(jobId.prefix(8))...")
+        os_log("Job created: %{public}@...", log: shareLog, type: .info, String(jobId.prefix(8)))
         return jobId
     }
     
@@ -245,7 +248,7 @@ class ShareViewController: UIViewController {
                 }
                 
                 let stage = json["stage"] as? String ?? "Processing"
-                print("📱 Share: Poll \(attempt): \(status) \(progress)% - \(stage)")
+                os_log("Poll %d: %{public}@ %d%% - %{public}@", log: shareLog, type: .debug, attempt, status, progress, stage)
                 
                 // Update UI progress based on real server progress
                 await MainActor.run {
@@ -278,14 +281,16 @@ class ShareViewController: UIViewController {
                 
             } catch {
                 consecutiveNetworkErrors += 1
-                print("📱 Share: Poll \(attempt): Network error (\(consecutiveNetworkErrors)/\(maxNetworkRetries)) - \(error.localizedDescription)")
+                os_log("Poll %d: Network error (%d/%d) - %{public}@", log: shareLog, type: .error, attempt, consecutiveNetworkErrors, maxNetworkRetries, error.localizedDescription)
                 
                 if consecutiveNetworkErrors >= maxNetworkRetries {
                     throw NSError(domain: "WatchLater", code: -1001,
                         userInfo: [NSLocalizedDescriptionKey: "Network connection issues. Please check your internet and try again."])
                 }
                 
-                let backoffSeconds = UInt64(min(pow(2.0, Double(consecutiveNetworkErrors)), 8.0))
+                let baseBackoff = min(pow(2.0, Double(consecutiveNetworkErrors)), 8.0)
+                let jitter = Double.random(in: 0..<(baseBackoff * 0.3))
+                let backoffSeconds = UInt64(baseBackoff + jitter)
                 try await Task.sleep(nanoseconds: backoffSeconds * 1_000_000_000)
                 continue
             }
@@ -328,10 +333,10 @@ class ShareViewController: UIViewController {
                 KeychainHelper.save(newRefreshToken, forKey: "supabase_refresh_token")
             }
             
-            print("📱 Share: ✅ Token refreshed and saved")
+            os_log("Token refreshed and saved", log: shareLog, type: .info)
             return accessToken
         } catch {
-            print("📱 Share: Token refresh network error: \(error)")
+            os_log("Token refresh network error: %{public}@", log: shareLog, type: .error, error.localizedDescription)
             return nil
         }
     }
