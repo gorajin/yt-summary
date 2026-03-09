@@ -358,7 +358,7 @@ async def notion_auth_callback(request: Request, code: str, state: str):
                     timeout=15.0
                 )
                 if token_response.status_code != 200:
-                    logger.error(f"Notion token exchange failed: {token_response.status_code} - {token_response.text}")
+                    logger.error(f"Notion token exchange failed: HTTP {token_response.status_code}")
                     return RedirectResponse(url="watchlater://notion-connected?success=false&error=token_exchange_failed")
                 token_data = token_response.json()
         except httpx.RequestError as e:

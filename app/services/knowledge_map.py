@@ -14,6 +14,7 @@ from typing import Optional
 from ..config import SUPABASE_URL, SUPABASE_KEY
 from ..models import KnowledgeMap, Topic, TopicConnection, TopicFact
 from .gemini import call_gemini_api
+from .youtube import extract_video_id
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +41,9 @@ def _condense_summary(summary: dict) -> dict:
     Works with the actual summaries table schema:
     id, youtube_url, title, notion_url, created_at
     """
-    # Extract video ID from youtube_url if possible
-    video_id = ""
+    # Extract video ID from youtube_url using validated parser
     yt_url = summary.get("youtube_url", "")
-    if "v=" in yt_url:
-        video_id = yt_url.split("v=")[1].split("&")[0]
-    elif "youtu.be/" in yt_url:
-        video_id = yt_url.split("youtu.be/")[1].split("?")[0]
+    video_id = extract_video_id(yt_url) or ""
     
     return {
         "videoId": video_id,

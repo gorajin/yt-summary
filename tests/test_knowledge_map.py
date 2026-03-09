@@ -188,13 +188,13 @@ class TestCondenseSummary:
         from app.services.knowledge_map import _condense_summary
 
         summary = {
-            "youtube_url": "https://www.youtube.com/watch?v=abc123&si=xyz",
+            "youtube_url": "https://www.youtube.com/watch?v=abc123DEF45&si=xyz",
             "title": "React Deep Dive",
         }
 
         result = _condense_summary(summary)
 
-        assert result["videoId"] == "abc123"
+        assert result["videoId"] == "abc123DEF45"
         assert result["title"] == "React Deep Dive"
         assert result["youtubeUrl"] == summary["youtube_url"]
 
@@ -202,13 +202,13 @@ class TestCondenseSummary:
         from app.services.knowledge_map import _condense_summary
 
         summary = {
-            "youtube_url": "https://youtu.be/def456?si=abc",
+            "youtube_url": "https://youtu.be/def456GHI78?si=abc",
             "title": "Short URL Video",
         }
 
         result = _condense_summary(summary)
 
-        assert result["videoId"] == "def456"
+        assert result["videoId"] == "def456GHI78"
         assert result["title"] == "Short URL Video"
 
     def test_condense_minimal_summary(self):

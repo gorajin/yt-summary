@@ -13,6 +13,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from .auth import get_current_user, supabase
+from ..services.youtube import extract_video_id
 
 logger = logging.getLogger(__name__)
 
@@ -157,13 +158,9 @@ async def export_summary_endpoint(
         if not summary.get("summary_json"):
             raise HTTPException(status_code=404, detail="Export not available — summary content is not stored in database")
         
-        # Extract video_id from youtube_url
+        # Extract video_id from youtube_url using validated parser
         yt_url = summary.get("youtube_url", "")
-        vid = ""
-        if "v=" in yt_url:
-            vid = yt_url.split("v=")[1].split("&")[0]
-        elif "youtu.be/" in yt_url:
-            vid = yt_url.split("youtu.be/")[1].split("?")[0]
+        vid = extract_video_id(yt_url) or ""
         
         try:
             content, content_type = export_summary(summary, fmt=format, video_id=vid)
