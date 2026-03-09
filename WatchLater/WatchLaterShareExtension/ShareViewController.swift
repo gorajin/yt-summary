@@ -105,7 +105,7 @@ class ShareViewController: UIViewController {
                 var transcript = await transcriptExtractor.fetchTranscript(for: url)
                 
                 // If client-side fails, signal server to attempt extraction
-                if transcript == nil || transcript!.isEmpty {
+                if transcript?.isEmpty ?? true {
                     os_log("Client-side transcript failed, requesting server extraction", log: shareLog, type: .info)
                     transcript = "__SERVER_EXTRACT__"
                     
@@ -617,8 +617,12 @@ struct ShareExtensionView: View {
                 }
             }
         }
+        .onDisappear {
+            progressTimer?.invalidate()
+            progressTimer = nil
+        }
     }
-    
+
     private var thumbnailPlaceholder: some View {
         Rectangle()
             .fill(Color(.systemGray5))
