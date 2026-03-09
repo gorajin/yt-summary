@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+import os.log
+
+private let authLog = OSLog(subsystem: "com.watchlater.app", category: "AuthManager")
 
 // MARK: - Auth Manager
 
@@ -124,7 +127,7 @@ class AuthManager: ObservableObject {
                     email: userInfo.email ?? "Google User"
                 )
             } catch {
-                print("Failed to fetch user info: \(error)")
+                os_log("Failed to fetch user info: %{public}@", log: authLog, type: .error, "\(error)")
                 // Still save session with minimal info
                 saveSession(token: accessToken, refreshToken: result.refreshToken, userId: "", email: "Google User")
             }
@@ -202,7 +205,7 @@ class AuthManager: ObservableObject {
     /// Refreshes the access token using the stored refresh token
     func refreshTokenIfNeeded() async {
         guard let refreshToken = KeychainHelper.get(forKey: refreshTokenKey) else {
-            print("No refresh token available")
+            os_log("No refresh token available", log: authLog, type: .info)
             return
         }
         
@@ -221,7 +224,7 @@ class AuthManager: ObservableObject {
             
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
-                print("Token refresh failed")
+                os_log("Token refresh failed", log: authLog, type: .error)
                 return
             }
             
@@ -235,11 +238,11 @@ class AuthManager: ObservableObject {
                         userId: self.userId ?? "",
                         email: self.userEmail ?? ""
                     )
-                    print("✓ Token refreshed successfully")
+                    os_log("Token refreshed successfully", log: authLog, type: .info)
                 }
             }
         } catch {
-            print("Token refresh error: \(error)")
+            os_log("Token refresh error: %{public}@", log: authLog, type: .error, "\(error)")
         }
     }
 }

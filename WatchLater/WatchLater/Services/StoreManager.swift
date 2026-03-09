@@ -1,5 +1,8 @@
 import Foundation
 import StoreKit
+import os.log
+
+private let storeLog = OSLog(subsystem: "com.watchlater.app", category: "StoreManager")
 
 /// Manages in-app purchases using StoreKit 2
 @MainActor
@@ -54,9 +57,9 @@ class StoreManager: ObservableObject {
             let productIDs = [Self.proMonthlyID, Self.proYearlyID]
             products = try await Product.products(for: productIDs)
             products.sort { $0.price < $1.price }
-            print("StoreKit: Loaded \(products.count) products")
+            os_log("Loaded %d products", log: storeLog, type: .info, products.count)
         } catch {
-            print("StoreKit: Failed to load products: \(error)")
+            os_log("Failed to load products: %{public}@", log: storeLog, type: .error, "\(error)")
             errorMessage = "Failed to load subscription options"
         }
         
@@ -84,17 +87,17 @@ class StoreManager: ObservableObject {
                 await transaction.finish()
                 
                 isLoading = false
-                print("StoreKit: Purchase successful for \(product.id)")
+                os_log("Purchase successful for %{public}@", log: storeLog, type: .info, product.id)
                 return true
                 
             case .userCancelled:
                 isLoading = false
-                print("StoreKit: User cancelled purchase")
+                os_log("User cancelled purchase", log: storeLog, type: .info)
                 return false
                 
             case .pending:
                 isLoading = false
-                print("StoreKit: Purchase pending (e.g., parental approval)")
+                os_log("Purchase pending (e.g., parental approval)", log: storeLog, type: .info)
                 errorMessage = "Purchase is pending approval"
                 return false
                 
@@ -105,7 +108,7 @@ class StoreManager: ObservableObject {
         } catch {
             isLoading = false
             errorMessage = "Purchase failed: \(error.localizedDescription)"
-            print("StoreKit: Purchase error: \(error)")
+            os_log("Purchase error: %{public}@", log: storeLog, type: .error, "\(error)")
             throw error
         }
     }
@@ -151,12 +154,12 @@ class StoreManager: ObservableObject {
                     }
                 }
             } catch {
-                print("StoreKit: Failed to verify transaction: \(error)")
+                os_log("Failed to verify transaction: %{public}@", log: storeLog, type: .error, "\(error)")
             }
         }
         
         purchasedProductIDs = purchased
-        print("StoreKit: Current entitlements: \(purchased)")
+        os_log("Current entitlements: %{public}@", log: storeLog, type: .info, "\(purchased)")
         
         if let productID = purchased.first {
             // Active subscription: sync upgrade with JWS proof
@@ -179,7 +182,7 @@ class StoreManager: ObservableObject {
                     await self?.updatePurchasedProducts()
                     await transaction?.finish()
                 } catch {
-                    print("StoreKit: Transaction update failed: \(error)")
+                    os_log("Transaction update failed: %{public}@", log: storeLog, type: .error, "\(error)")
                 }
             }
         }
@@ -199,7 +202,7 @@ class StoreManager: ObservableObject {
     private func syncSubscriptionWithBackend(productID: String, signedTransaction: String? = nil) async {
         // Get auth token from shared keychain
         guard let token = KeychainHelper.get(forKey: AppConfig.KeychainKeys.accessToken) else {
-            print("StoreKit: No auth token for backend sync")
+            os_log("No auth token for backend sync", log: storeLog, type: .error)
             return
         }
         
@@ -234,20 +237,20 @@ class StoreManager: ObservableObject {
             
             if let httpResponse = response as? HTTPURLResponse {
                 if httpResponse.statusCode == 200 {
-                    print("StoreKit: Backend sync successful for \(productID) (JWS: \(signedTransaction != nil ? "yes" : "no"))")
+                    os_log("Backend sync successful for %{public}@ (JWS: %{public}@)", log: storeLog, type: .info, productID, signedTransaction != nil ? "yes" : "no")
                 } else {
-                    print("StoreKit: Backend sync failed with status \(httpResponse.statusCode)")
+                    os_log("Backend sync failed with status %d", log: storeLog, type: .error, httpResponse.statusCode)
                 }
             }
         } catch {
-            print("StoreKit: Backend sync error: \(error.localizedDescription)")
+            os_log("Backend sync error: %{public}@", log: storeLog, type: .error, error.localizedDescription)
         }
     }
     
     /// Notify backend that subscription has expired/been cancelled
     private func syncDowngradeWithBackend() async {
         guard let token = KeychainHelper.get(forKey: AppConfig.KeychainKeys.accessToken) else {
-            print("StoreKit: No auth token for downgrade sync")
+            os_log("No auth token for downgrade sync", log: storeLog, type: .error)
             return
         }
         
@@ -266,16 +269,16 @@ class StoreManager: ObservableObject {
                 if httpResponse.statusCode == 200 {
                     if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let tier = json["subscription_tier"] as? String {
-                        print("StoreKit: Downgrade sync complete → tier: \(tier)")
+                        os_log("Downgrade sync complete - tier: %{public}@", log: storeLog, type: .info, tier)
                     } else {
-                        print("StoreKit: Downgrade sync successful")
+                        os_log("Downgrade sync successful", log: storeLog, type: .info)
                     }
                 } else {
-                    print("StoreKit: Downgrade sync failed with status \(httpResponse.statusCode)")
+                    os_log("Downgrade sync failed with status %d", log: storeLog, type: .error, httpResponse.statusCode)
                 }
             }
         } catch {
-            print("StoreKit: Downgrade sync error: \(error.localizedDescription)")
+            os_log("Downgrade sync error: %{public}@", log: storeLog, type: .error, error.localizedDescription)
         }
     }
 }

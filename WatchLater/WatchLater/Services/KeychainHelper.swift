@@ -1,5 +1,8 @@
 import Foundation
 import Security
+import os.log
+
+private let keychainLog = OSLog(subsystem: "com.watchlater.app", category: "Keychain")
 
 /// Utility for secure storage of sensitive data in iOS Keychain
 enum KeychainHelper {
@@ -36,7 +39,7 @@ enum KeychainHelper {
         let status = SecItemAdd(query as CFDictionary, nil)
         
         if status != errSecSuccess {
-            print("Keychain save error for \(key): \(status)")
+            os_log("Keychain save error for %{public}@: %d", log: keychainLog, type: .error, key, status)
         }
     }
     

@@ -1,4 +1,7 @@
 import SwiftUI
+import os.log
+
+private let knowledgeMapLog = OSLog(subsystem: "com.watchlater.app", category: "KnowledgeMap")
 
 // MARK: - Knowledge Map View
 
@@ -382,7 +385,7 @@ struct KnowledgeMapView: View {
             // Invalidate sorted cache so it's recomputed from fresh data
             _sortedTopicsCache = mapResponse?.knowledgeMap?.topics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
         } catch {
-            print("Knowledge Map: Failed to load: \(error)")
+            os_log("Failed to load: %{public}@", log: knowledgeMapLog, type: .error, "\(error)")
         }
     }
     
