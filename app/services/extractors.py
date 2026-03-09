@@ -7,6 +7,7 @@ same Gemini pipeline can process any content uniformly.
 
 import re
 import logging
+import urllib.error
 import urllib.request
 from typing import Optional, List, Tuple
 
@@ -80,6 +81,16 @@ def extract_article(url: str) -> Tuple[List[TranscriptSegment], str]:
         })
         with urllib.request.urlopen(req, timeout=15) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            raise ValueError("This article is behind a paywall or requires login.")
+        elif e.code == 404:
+            raise ValueError("Article not found. Please check the URL.")
+        raise ValueError(f"Failed to fetch article (HTTP {e.code})")
+    except urllib.error.URLError as e:
+        raise ValueError(f"Could not connect to {url[:60]}. Please check the URL and try again.")
+    except TimeoutError:
+        raise ValueError("The article took too long to load. Please try again.")
     except Exception as e:
         raise ValueError(f"Failed to fetch article: {e}")
     
@@ -213,10 +224,18 @@ def extract_pdf(url: Optional[str] = None, content: Optional[str] = None) -> Tup
         })
         with urllib.request.urlopen(req, timeout=30) as resp:
             pdf_bytes = resp.read()
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"Failed to download PDF (HTTP {e.code})")
+    except urllib.error.URLError as e:
+        raise ValueError(f"Could not connect to download PDF. Please check the URL.")
+    except TimeoutError:
+        raise ValueError("PDF download timed out. The file may be too large or the server is slow.")
     except Exception as e:
         raise ValueError(f"Failed to download PDF: {e}")
-    
-    # Size limit: 50MB
+
+    # Validate size
+    if len(pdf_bytes) < 100:
+        raise ValueError("PDF appears to be empty or corrupt.")
     if len(pdf_bytes) > 50 * 1024 * 1024:
         raise ValueError("PDF is too large (max 50MB)")
     
@@ -248,7 +267,9 @@ def extract_pdf(url: Optional[str] = None, content: Optional[str] = None) -> Tup
         
     except ImportError:
         logger.warning("pymupdf not available, trying pdfminer")
-    
+    except Exception as e:
+        logger.warning(f"pymupdf extraction failed ({type(e).__name__}: {e}), trying pdfminer")
+
     # Fallback: pdfminer.six
     try:
         from pdfminer.high_level import extract_text as pdfminer_extract
