@@ -71,14 +71,22 @@ def setup_logging():
 # ============ Startup Validation ============
 
 def validate_startup():
-    """Validate critical configuration at startup."""
+    """Validate critical configuration at startup.
+
+    Raises RuntimeError if GEMINI_API_KEY is missing (fatal).
+    Logs warnings for non-critical missing config (Supabase).
+    """
     _logger = logging.getLogger(__name__)
     warnings = []
 
+    # GEMINI_API_KEY is required — the app cannot function without it
     if not GEMINI_API_KEY:
-        warnings.append("GEMINI_API_KEY not set - summarization will fail")
-    else:
-        _logger.info("Gemini API key configured")
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. "
+            "This variable is required for the app to function. "
+            "Set it in your environment or .env file."
+        )
+    _logger.info("Gemini API key configured")
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         warnings.append("Supabase credentials not set - multi-user mode disabled")
