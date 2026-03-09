@@ -15,10 +15,12 @@ from typing import Optional
 from datetime import datetime
 
 import httpx
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from notion_client import Client as NotionClient
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..config import (
     SUPABASE_URL,
@@ -47,6 +49,9 @@ if SUPABASE_URL and SUPABASE_KEY:
 
 
 router = APIRouter(tags=["auth"])
+
+# Rate limiter for abuse prevention
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ============ Auth Helpers ============
@@ -166,7 +171,9 @@ class SubscriptionSyncRequest(BaseModel):
 
 
 @router.post("/subscription/sync")
+@limiter.limit("10/minute")
 async def sync_subscription(
+    request: Request,
     body: SubscriptionSyncRequest,
     user: dict = Depends(get_current_user)
 ):
@@ -249,7 +256,8 @@ async def sync_subscription(
 
 
 @router.post("/subscription/downgrade")
-async def downgrade_subscription(user: dict = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def downgrade_subscription(request: Request, user: dict = Depends(get_current_user)):
     """Downgrade a user back to free tier.
     
     Called by the iOS app when Transaction.currentEntitlements returns empty
@@ -297,7 +305,8 @@ async def downgrade_subscription(user: dict = Depends(get_current_user)):
 
 
 @router.get("/auth/notion")
-async def notion_auth_start(user_id: str):
+@limiter.limit("10/minute")
+async def notion_auth_start(request: Request, user_id: str):
     """Start Notion OAuth flow."""
     if not NOTION_CLIENT_ID:
         raise HTTPException(status_code=500, detail="Notion OAuth not configured")
@@ -317,7 +326,8 @@ async def notion_auth_start(user_id: str):
 
 
 @router.get("/auth/notion/callback")
-async def notion_auth_callback(code: str, state: str):
+@limiter.limit("10/minute")
+async def notion_auth_callback(request: Request, code: str, state: str):
     """Handle Notion OAuth callback."""
     try:
         if not NOTION_CLIENT_SECRET or not NOTION_CLIENT_ID:
@@ -444,7 +454,8 @@ async def notion_auth_callback(code: str, state: str):
 
 
 @router.get("/me")
-async def get_profile(user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def get_profile(request: Request, user: dict = Depends(get_current_user)):
     """Get current user profile."""
     tier = user.get("subscription_tier", "free")
     used = user.get("summaries_this_month", 0)
@@ -477,7 +488,8 @@ class EmailPreferencesRequest(BaseModel):
 
 
 @router.get("/email/preferences")
-async def get_email_preferences(user: dict = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def get_email_preferences(request: Request, user: dict = Depends(get_current_user)):
     """Get current email digest preferences."""
     return {
         "email_digest_enabled": user.get("email_digest_enabled", True),
@@ -487,7 +499,9 @@ async def get_email_preferences(user: dict = Depends(get_current_user)):
 
 
 @router.put("/email/preferences")
+@limiter.limit("10/minute")
 async def update_email_preferences(
+    request: Request,
     body: EmailPreferencesRequest,
     user: dict = Depends(get_current_user),
 ):
