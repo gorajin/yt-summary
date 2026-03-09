@@ -72,19 +72,20 @@ def setup_logging():
 
 def validate_startup():
     """Validate critical configuration at startup."""
+    _logger = logging.getLogger(__name__)
     warnings = []
-    
+
     if not GEMINI_API_KEY:
         warnings.append("GEMINI_API_KEY not set - summarization will fail")
     else:
-        print("✓ Gemini API key configured")
-    
+        _logger.info("Gemini API key configured")
+
     if not SUPABASE_URL or not SUPABASE_KEY:
         warnings.append("Supabase credentials not set - multi-user mode disabled")
     else:
-        print("✓ Supabase configured")
-    
+        _logger.info("Supabase configured")
+
     for warning in warnings:
-        print(f"⚠ WARNING: {warning}")
-    
+        _logger.warning(warning)
+
     return len(warnings) == 0

@@ -389,7 +389,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
     # Log if we have multiple batches
     total_blocks = len(children)
     if remaining_batches:
-        print(f"  → Notion: {total_blocks} blocks, splitting into {1 + len(remaining_batches)} batches")
+        logger.info("Notion: %d blocks, splitting into %d batches", total_blocks, 1 + len(remaining_batches))
     
     # Define basic properties everyone has
     basic_properties = {
@@ -421,7 +421,7 @@ def create_lecture_notes_page(notion_token: str, database_id: str,
         error_str = str(e).lower()
         # Fallback to basic properties if the schema doesn't exist on user's Notion DB
         if "property" in error_str or "schema" in error_str or "400" in error_str:
-            print(f"  ⚠ Notion schema fallback: {e}")
+            logger.warning("Notion schema fallback: %s", e)
             response = _create_page_with_retry(
                 notion,
                 parent={"database_id": database_id},

@@ -41,9 +41,9 @@ supabase: SupabaseClient = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("✓ Supabase connected (auth router)")
+        logger.info("Supabase connected (auth router)")
     except Exception as e:
-        print(f"⚠ Supabase initialization failed: {e}")
+        logger.error("Supabase initialization failed: %s", e)
 
 
 router = APIRouter(tags=["auth"])
