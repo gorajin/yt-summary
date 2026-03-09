@@ -77,11 +77,15 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS configuration
 # Note: iOS apps don't send Origin headers the same way browsers do,
 # so we need permissive settings for mobile app compatibility.
+# In production, set ALLOWED_ORIGINS to specific origins (e.g. your Railway domain).
+if ALLOWED_ORIGINS == ["*"]:
+    logger.warning("CORS allows ALL origins — set ALLOWED_ORIGINS in production")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
