@@ -125,26 +125,33 @@ struct HistoryView: View {
 struct SummaryRow: View {
     let summary: SummaryHistoryItem
     var onRetry: (() -> Void)? = nil
-    
+
+    // Reusable formatters — avoid allocating on every SwiftUI redraw
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let displayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
     /// Extract video ID for thumbnail (uses shared logic)
     private var videoId: String? {
         TranscriptExtractor.extractVideoId(from: summary.youtubeUrl)
     }
-    
+
     private var thumbnailURL: URL? {
         guard let videoId = videoId else { return nil }
         return URL(string: "https://img.youtube.com/vi/\(videoId)/mqdefault.jpg")
     }
-    
+
     private var formattedDate: String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        
-        if let date = formatter.date(from: summary.createdAt) {
-            let displayFormatter = DateFormatter()
-            displayFormatter.dateStyle = .medium
-            displayFormatter.timeStyle = .short
-            return displayFormatter.string(from: date)
+        if let date = Self.isoFormatter.date(from: summary.createdAt) {
+            return Self.displayFormatter.string(from: date)
         }
         return summary.createdAt
     }

@@ -5,11 +5,12 @@ Provides the /summarize endpoint for processing YouTube videos asynchronously.
 Jobs are created immediately and processed in the background.
 """
 
-import asyncio
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..models import SummarizeRequest, SummarizeResponse, IngestRequest, TranscriptSegment, SourceType, SummaryFormat
 from ..services.youtube import extract_video_id, get_transcript_with_timestamps
@@ -21,6 +22,9 @@ from .auth import get_current_user, check_rate_limit, increment_usage, supabase
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["summarize"])
+
+# Rate limiter for abuse prevention
+limiter = Limiter(key_func=get_remote_address)
 
 
 def get_friendly_error(error: str) -> str:
@@ -187,6 +191,7 @@ async def process_summarization_job(
 
 
 @router.post("/summarize")
+@limiter.limit("10/minute")
 async def summarize(request: Request, body: SummarizeRequest, user: dict = Depends(get_current_user)):
     """Create a summarization job (authenticated).
     
@@ -212,8 +217,9 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
         job = await create_job(user["id"], body.url)
         logger.info(f"Created job {job.id[:8]} for user {user['id']}: {body.url}")
         
-        # Spawn background task
-        asyncio.create_task(
+        # Spawn tracked background task (errors are logged, task is drained on shutdown)
+        from main import track_background_task
+        track_background_task(
             process_summarization_job(
                 job_id=job.id,
                 user=user,
@@ -348,6 +354,7 @@ async def process_ingest_job(
 
 
 @router.post("/ingest")
+@limiter.limit("10/minute")
 async def ingest(request: Request, body: IngestRequest, user: dict = Depends(get_current_user)):
     """Ingest any content source (article, PDF, podcast).
     
@@ -370,7 +377,8 @@ async def ingest(request: Request, body: IngestRequest, user: dict = Depends(get
         job = await create_job(user["id"], body.url)
         logger.info(f"Created ingest job {job.id[:8]}: type={source_type.value}, url={body.url}")
         
-        asyncio.create_task(
+        from main import track_background_task
+        track_background_task(
             process_ingest_job(
                 job_id=job.id,
                 user=user,

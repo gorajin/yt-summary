@@ -14,6 +14,7 @@ import os
 import re
 import json
 import time
+import logging
 import tempfile
 import urllib.request
 from typing import Optional, List, Tuple
@@ -22,6 +23,8 @@ import yt_dlp
 
 from ..config import PREFERRED_LANGUAGES
 from ..models import TranscriptSegment
+
+logger = logging.getLogger(__name__)
 
 
 def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
@@ -47,9 +50,9 @@ def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
                 empty_response_count += 1
                 if empty_response_count >= 2:
                     # Multiple empty responses likely means PoToken enforcement, not rate limit
-                    print(f"  → Multiple empty responses detected - likely PoToken enforcement")
+                    logger.warning("Multiple empty responses detected - likely PoToken enforcement")
                     raise Exception("Video requires authentication token (PoToken) that cannot be generated server-side.")
-                print(f"  → Got empty result (attempt {attempt + 1}), waiting {base_delay}s before retry...")
+                logger.info("Got empty result (attempt %d), waiting %.1fs before retry...", attempt + 1, base_delay)
                 time.sleep(base_delay)
                 continue
             return result
@@ -76,11 +79,11 @@ def _retry_on_429(func, max_retries: int = 3, base_delay: float = 2.0):
             
             if is_potoken:
                 # Don't retry PoToken issues - they won't resolve
-                print(f"  → PoToken enforcement detected, server-side extraction not possible")
+                logger.warning("PoToken enforcement detected, server-side extraction not possible")
                 raise
             elif is_rate_limit:
                 wait_time = base_delay * (2 ** attempt)  # exponential: 2, 4, 8 or 3, 6, 12 etc
-                print(f"  → YouTube blocking detected ({error_type}), waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}")
+                logger.warning("YouTube blocking detected (%s), waiting %.1fs before retry %d/%d", error_type, wait_time, attempt + 1, max_retries)
                 time.sleep(wait_time)
                 last_error = e
             else:
@@ -135,18 +138,18 @@ def get_transcript(url: str) -> Tuple[str, str]:
     if not video_id:
         raise Exception("Could not extract video ID")
     
-    print(f"  → Attempting transcript extraction for video: {video_id}")
-    
+    logger.info("Attempting transcript extraction for video: %s", video_id)
+
     # Try youtube-transcript-api first (more reliable on servers)
     try:
-        print("  → Trying youtube-transcript-api...")
+        logger.info("Trying youtube-transcript-api...")
         from youtube_transcript_api import YouTubeTranscriptApi
         
         # v1.2.4+ requires instance, not class methods
         ytt_api = YouTubeTranscriptApi()
         
         # Strategy 1: Try simple direct fetch first (most reliable)
-        print("  → Trying direct fetch...")
+        logger.info("Trying direct fetch...")
         for lang in PREFERRED_LANGUAGES:
             try:
                 fetched = ytt_api.fetch(video_id, languages=[lang])
@@ -155,10 +158,10 @@ def get_transcript(url: str) -> Tuple[str, str]:
                 transcript = re.sub(r'\s+', ' ', transcript).strip()
                 
                 title = get_video_title(video_id)
-                print(f"  → Got transcript in {lang} ({len(transcript)} chars)")
+                logger.info("Got transcript in %s (%d chars)", lang, len(transcript))
                 return transcript, title
             except Exception as e:
-                print(f"  → fetch({lang}) failed: {type(e).__name__}")
+                logger.debug("fetch(%s) failed: %s", lang, type(e).__name__)
                 continue
         
         # Strategy 2: List all transcripts and try each (v1.2.4 renamed list_transcripts to list)
@@ -172,61 +175,61 @@ def get_transcript(url: str) -> Tuple[str, str]:
                     transcript = transcript_list.find_transcript([lang])
                     fetched = transcript.fetch()
                     transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                    print(f"  → Found transcript in language: {lang}")
+                    logger.info("Found transcript in language: %s", lang)
                     break
                 except Exception:
                     continue
             
             # Strategy 2: Get ANY available transcript (manual or generated)
             if not transcript_data:
-                print("  → No preferred language found, trying any available transcript...")
+                logger.info("No preferred language found, trying any available transcript...")
                 try:
                     for transcript in transcript_list:
                         try:
                             fetched = transcript.fetch()
                             transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                            print(f"  → Using {transcript.language} ({transcript.language_code}) transcript")
+                            logger.info("Using %s (%s) transcript", transcript.language, transcript.language_code)
                             break
                         except Exception as fetch_err:
-                            print(f"  → Failed to fetch {transcript.language_code}: {type(fetch_err).__name__}")
+                            logger.debug("Failed to fetch %s: %s", transcript.language_code, type(fetch_err).__name__)
                             continue
                 except Exception:
                     pass
             
             # Strategy 3: Try translation to English
             if not transcript_data:
-                print("  → Trying translation to English...")
+                logger.info("Trying translation to English...")
                 try:
                     for transcript in transcript_list:
                         if transcript.is_translatable:
                             translated = transcript.translate('en')
                             fetched = translated.fetch()
                             transcript_data = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else fetched
-                            print(f"  → Translated from {transcript.language} to English")
+                            logger.info("Translated from %s to English", transcript.language)
                             break
                 except Exception as trans_err:
-                    print(f"  → Translation failed: {type(trans_err).__name__}")
+                    logger.debug("Translation failed: %s", type(trans_err).__name__)
             
             if transcript_data:
                 transcript = ' '.join([entry['text'] for entry in transcript_data])
                 transcript = re.sub(r'\s+', ' ', transcript).strip()
                 
                 title = get_video_title(video_id)
-                print(f"  → Got transcript via youtube-transcript-api ({len(transcript)} chars)")
+                logger.info("Got transcript via youtube-transcript-api (%d chars)", len(transcript))
                 return transcript, title
-                
+
         except Exception as list_err:
-            print(f"  → list() failed: {type(list_err).__name__}: {list_err}")
-        
-        print("  → youtube-transcript-api could not get transcript, trying yt-dlp")
-            
+            logger.debug("list() failed: %s: %s", type(list_err).__name__, list_err)
+
+        logger.info("youtube-transcript-api could not get transcript, trying yt-dlp")
+
     except ImportError as ie:
-        print(f"  → youtube-transcript-api not installed: {ie}, using yt-dlp")
+        logger.debug("youtube-transcript-api not installed: %s, using yt-dlp", ie)
     except Exception as e:
-        print(f"  → youtube-transcript-api failed: {type(e).__name__}: {e}, trying yt-dlp")
-    
+        logger.warning("youtube-transcript-api failed: %s: %s, trying yt-dlp", type(e).__name__, e)
+
     # Fallback to yt-dlp
-    print("  → Falling back to yt-dlp...")
+    logger.info("Falling back to yt-dlp...")
     return _get_transcript_ytdlp(url)
 
 
@@ -246,7 +249,7 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
     if not video_id:
         raise Exception("Could not extract video ID")
     
-    print(f"  → Extracting timestamped transcript for: {video_id}")
+    logger.info("Extracting timestamped transcript for: %s", video_id)
     
     # Get title early (less likely to be rate limited)
     title = get_video_title(video_id)
@@ -268,12 +271,12 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
                 else:
                     # Convert FetchedTranscriptSnippet objects to dicts
                     transcript_data = [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched]
-                print(f"  → Got transcript via fetch() in {lang}")
+                logger.info("Got transcript via fetch() in %s", lang)
                 return transcript_data
             except Exception as e:
                 err_str = str(e).lower()
                 if 'no transcript' not in err_str and 'could not find' not in err_str:
-                    print(f"  → fetch({lang}): {type(e).__name__}")
+                    logger.debug("fetch(%s): %s", lang, type(e).__name__)
                 continue
         
         # Strategy 2: List all available and try each (v1.2.4: list() not list_transcripts())
@@ -282,7 +285,7 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
             
             # Log available transcripts
             available = [f"{t.language_code}({'manual' if not t.is_generated else 'auto'})" for t in transcript_list]
-            print(f"  → Available: {', '.join(available) if available else 'none'}")
+            logger.info("Available: %s", ', '.join(available) if available else 'none')
             
             # Try preferred languages first
             for lang in PREFERRED_LANGUAGES:
@@ -303,7 +306,7 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
                         return fetched.to_raw_data()
                     return [{'text': s.text, 'start': s.start, 'duration': s.duration} for s in fetched]
                 except Exception as e:
-                    print(f"  → {transcript.language_code}: {type(e).__name__}")
+                    logger.debug("%s: %s", transcript.language_code, type(e).__name__)
                     continue
             
             # Try translation to English
@@ -319,7 +322,7 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
                         continue
                         
         except Exception as list_err:
-            print(f"  → list() failed: {type(list_err).__name__}: {list_err}")
+            logger.debug("list() failed: %s: %s", type(list_err).__name__, list_err)
         
         return None
     
@@ -328,14 +331,14 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
     try:
         transcript_data = _retry_on_429(try_extract_transcript, max_retries=3, base_delay=3.0)
     except ImportError:
-        print("  → youtube-transcript-api not available")
+        logger.debug("youtube-transcript-api not available")
     except Exception as e:
         error_str = str(e).lower()
         if '429' in error_str or 'too many' in error_str:
             # Wait extra time before falling back
-            print(f"  → YouTube rate limited after retries, waiting 10s before fallback...")
+            logger.warning("YouTube rate limited after retries, waiting 10s before fallback...")
             time.sleep(10)
-        print(f"  → Transcript extraction failed: {type(e).__name__}")
+        logger.warning("Transcript extraction failed: %s", type(e).__name__)
     
     # If we got transcript data, convert to segments
     if transcript_data:
@@ -354,11 +357,11 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
         flat_text = ' '.join([s.text for s in segments])
         flat_text = re.sub(r'\s+', ' ', flat_text).strip()
         
-        print(f"  → Got {len(segments)} timestamped segments ({len(flat_text)} chars)")
+        logger.info("Got %d timestamped segments (%d chars)", len(segments), len(flat_text))
         return segments, flat_text, title
     
     # Fallback: Try yt-dlp with retry (wraps single call, no cascade)
-    print("  → Falling back to yt-dlp...")
+    logger.info("Falling back to yt-dlp...")
     try:
         def try_ytdlp():
             return _get_transcript_ytdlp(url)
@@ -384,7 +387,7 @@ def get_transcript_with_timestamps(url: str) -> Tuple[List[TranscriptSegment], s
         
     except Exception as e:
         error_str = str(e).lower()
-        print(f"  → yt-dlp failed: {type(e).__name__}: {str(e)[:100]}")
+        logger.warning("yt-dlp failed: %s: %s", type(e).__name__, str(e)[:100])
         
         # All fallbacks exhausted - return appropriate error
         if '429' in error_str or 'too many' in error_str or 'bot' in error_str:

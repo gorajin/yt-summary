@@ -8,11 +8,35 @@ building prompts, and generating lecture notes from transcripts.
 import re
 import json
 import time
+import logging
 import urllib.request
 from typing import List
 
 from ..config import GEMINI_API_KEY, GEMINI_API_ENDPOINT
 from ..models import ContentType, LectureNotes, TranscriptSegment, SummaryFormat
+
+logger = logging.getLogger(__name__)
+
+# Allowed language codes to prevent prompt injection via the `language` parameter
+_ALLOWED_LANGUAGES = frozenset({
+    "en", "ko", "ja", "zh", "es", "fr", "de", "pt", "it", "ru", "ar", "hi",
+    "tr", "pl", "nl", "sv", "da", "fi", "no", "id", "th", "vi", "cs", "ro",
+    "hu", "el", "he", "uk", "bg", "hr", "sk", "sl", "ms", "fil",
+})
+
+
+def _sanitize_language(language: str) -> str:
+    """Sanitize the language parameter to prevent prompt injection.
+
+    Only short ISO-639 codes are accepted.  Anything else is silently
+    replaced with ``"en"`` so user-supplied freetext can never leak
+    into the Gemini prompt.
+    """
+    cleaned = re.sub(r"[^a-zA-Z]", "", (language or "").strip())[:5].lower()
+    if cleaned in _ALLOWED_LANGUAGES:
+        return cleaned
+    logger.warning("Rejected invalid language code %r, falling back to 'en'", language)
+    return "en"
 
 
 def call_gemini_api(prompt: str, max_retries: int = 3, timeout: int = 180) -> dict:
@@ -57,11 +81,11 @@ def call_gemini_api(prompt: str, max_retries: int = 3, timeout: int = 180) -> di
             last_error = e
             if e.code == 429:  # Rate limited
                 wait_time = (2 ** attempt) * 2  # 2, 4, 8 seconds
-                print(f"    ⚠ Rate limited, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                logger.warning("Rate limited, waiting %ds before retry %d/%d", wait_time, attempt + 1, max_retries)
                 time.sleep(wait_time)
             elif e.code >= 500:  # Server error
                 wait_time = (2 ** attempt) * 1  # 1, 2, 4 seconds
-                print(f"    ⚠ Server error {e.code}, retrying in {wait_time}s ({attempt + 1}/{max_retries})")
+                logger.warning("Server error %d, retrying in %ds (%d/%d)", e.code, wait_time, attempt + 1, max_retries)
                 time.sleep(wait_time)
             else:
                 raise  # Don't retry client errors (4xx except 429)
@@ -69,7 +93,7 @@ def call_gemini_api(prompt: str, max_retries: int = 3, timeout: int = 180) -> di
         except (urllib.error.URLError, TimeoutError) as e:
             last_error = e
             wait_time = (2 ** attempt) * 1
-            print(f"    ⚠ Network error, retrying in {wait_time}s ({attempt + 1}/{max_retries})")
+            logger.warning("Network error, retrying in %ds (%d/%d)", wait_time, attempt + 1, max_retries)
             time.sleep(wait_time)
     
     raise Exception(f"Gemini API failed after {max_retries} retries: {last_error}")
@@ -121,13 +145,14 @@ def detect_content_type(transcript: str, title: str) -> ContentType:
 
 
 def _build_lecture_prompt(
-    transcript: str, 
-    content_type: ContentType, 
+    transcript: str,
+    content_type: ContentType,
     word_count: int,
     summary_format: SummaryFormat = SummaryFormat.DETAILED,
     language: str = "en"
 ) -> str:
     """Build specialized prompt based on content type, format, and language."""
+    language = _sanitize_language(language)
     approx_minutes = word_count // 150
     
     # Base context
@@ -244,17 +269,18 @@ GUIDELINES:
 
 
 def _build_timestamped_prompt(
-    segments: List[TranscriptSegment], 
-    content_type: ContentType, 
+    segments: List[TranscriptSegment],
+    content_type: ContentType,
     video_id: str = "",
     summary_format: SummaryFormat = SummaryFormat.DETAILED,
     language: str = "en"
 ) -> str:
     """Build prompt with timestamped transcript for precise references.
-    
+
     Formats the transcript to include timestamps every ~30 seconds,
     allowing Gemini to correlate content with video times.
     """
+    language = _sanitize_language(language)
     # Format segments with timestamps inline
     formatted_chunks = []
     current_chunk = []
@@ -415,8 +441,8 @@ def generate_lecture_notes(
     
     # Detect content type
     content_type = detect_content_type(transcript_text, title)
-    print(f"  → Detected content type: {content_type.value}")
-    
+    logger.info("Detected content type: %s", content_type.value)
+
     # Build specialized prompt
     prompt = _build_lecture_prompt(transcript_text, content_type, word_count, summary_format, language)
     
@@ -448,7 +474,7 @@ def generate_lecture_notes(
             tags=data.get("tags", [])
         )
     except json.JSONDecodeError as e:
-        print(f"  ⚠ JSON parsing failed: {e}")
+        logger.warning("JSON parsing failed: %s", e)
         # Return minimal notes on parse failure
         return LectureNotes(
             title=title or "Video Notes",
@@ -486,8 +512,8 @@ def generate_lecture_notes_from_segments(
     
     # Detect content type
     content_type = detect_content_type(flat_text, title)
-    print(f"  → Detected content type: {content_type.value}")
-    print(f"  → Processing {len(segments)} timestamped segments")
+    logger.info("Detected content type: %s", content_type.value)
+    logger.info("Processing %d timestamped segments", len(segments))
     
     # Build timestamped prompt
     prompt = _build_timestamped_prompt(segments, content_type, video_id, summary_format, language)
@@ -495,7 +521,7 @@ def generate_lecture_notes_from_segments(
     # Truncate prompt if too long (keep ~200k chars for transcript)
     max_prompt_length = 250000
     if len(prompt) > max_prompt_length:
-        print(f"  ⚠ Truncating prompt from {len(prompt)} to {max_prompt_length} chars")
+        logger.warning("Truncating prompt from %d to %d chars", len(prompt), max_prompt_length)
         prompt = prompt[:max_prompt_length]
     
     # Call Gemini API with retry logic
@@ -537,9 +563,9 @@ def generate_lecture_notes_from_segments(
             tags=data.get("tags", [])
         )
     except json.JSONDecodeError as e:
-        print(f"  ⚠ JSON parsing failed: {e}")
+        logger.warning("JSON parsing failed: %s", e)
         # Fallback to non-timestamped version
-        print("  → Falling back to generate_lecture_notes")
+        logger.info("Falling back to generate_lecture_notes")
         return generate_lecture_notes(flat_text, title, summary_format, language)
 
 
@@ -595,7 +621,7 @@ def _generate_notes_for_chunk(
     chunk_start = segments[0].timestamp_str() if segments else "0:00"
     chunk_end = segments[-1].timestamp_str() if segments else "0:00"
     
-    print(f"    → Processing chunk {chunk_index + 1}/{total_chunks} ({chunk_start} - {chunk_end})")
+    logger.info("Processing chunk %d/%d (%s - %s)", chunk_index + 1, total_chunks, chunk_start, chunk_end)
     
     # Modify title to indicate chunk
     chunk_title = f"{title} (Part {chunk_index + 1}/{total_chunks})"
@@ -696,14 +722,14 @@ def process_long_transcript(
     # Threshold: videos under 90 minutes use standard processing
     # (200k chars handles ~80 minutes well)
     if total_minutes < 90:
-        print(f"  → Video is {total_minutes:.0f} min, using standard processing")
+        logger.info("Video is %.0f min, using standard processing", total_minutes)
         return generate_lecture_notes_from_segments(segments, title, video_id, summary_format, language)
     
-    print(f"  → Long video detected ({total_minutes:.0f} min), using chunked processing")
-    
+    logger.info("Long video detected (%.0f min), using chunked processing", total_minutes)
+
     # Split into 30-minute chunks
     chunks = _split_into_chunks(segments, max_minutes=30)
-    print(f"  → Split into {len(chunks)} chunks")
+    logger.info("Split into %d chunks", len(chunks))
     
     # Process each chunk
     chunk_notes = []
@@ -712,7 +738,7 @@ def process_long_transcript(
         chunk_notes.append(notes)
     
     # Synthesize all chunk notes
-    print(f"  → Synthesizing {len(chunk_notes)} chunk notes")
+    logger.info("Synthesizing %d chunk notes", len(chunk_notes))
     final_notes = _synthesize_notes(chunk_notes, title)
     
     return final_notes

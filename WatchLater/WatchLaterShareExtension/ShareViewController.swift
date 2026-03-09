@@ -629,6 +629,8 @@ struct ShareExtensionView: View {
     // MARK: - Progress Simulation
     
     private func startProgressSimulation() {
+        progressTimer?.invalidate()
+        progressTimer = nil
         currentStage = .fetchingTranscript
         stageProgress = 0.0
         advanceProgressWithinStage()
@@ -664,6 +666,8 @@ struct ShareExtensionView: View {
     }
     
     private func stallOnLastStage() {
+        progressTimer?.invalidate()
+        progressTimer = nil
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
             if stageProgress < 0.95 {
                 stageProgress += 0.02

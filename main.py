@@ -28,6 +28,32 @@ logger = logging.getLogger(__name__)
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
+# Track in-flight background tasks so we can drain them on shutdown
+_background_tasks: set[asyncio.Task] = set()
+
+
+def track_background_task(coro) -> asyncio.Task:
+    """Create a tracked background task with automatic error handling.
+
+    Unlike bare asyncio.create_task(), this:
+    - Logs unhandled exceptions instead of silently dropping them
+    - Registers the task for graceful shutdown draining
+    """
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_log_task_exception)
+    return task
+
+
+def _log_task_exception(task: asyncio.Task):
+    """Log unhandled exceptions from background tasks."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error(f"Background task failed with unhandled exception: {exc}", exc_info=exc)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -35,15 +61,25 @@ async def lifespan(app: FastAPI):
     # Startup
     setup_logging()
     validate_startup()
-    
+
     # Start periodic job cleanup (every hour)
     cleanup_task = asyncio.create_task(_periodic_job_cleanup())
     logger.info("Started periodic job cleanup task")
-    
+
     yield
-    
-    # Shutdown
+
+    # Shutdown: cancel periodic task
     cleanup_task.cancel()
+
+    # Drain in-flight background jobs (wait up to 30s)
+    if _background_tasks:
+        logger.info(f"Waiting for {len(_background_tasks)} in-flight background tasks to finish...")
+        done, pending = await asyncio.wait(_background_tasks, timeout=30)
+        if pending:
+            logger.warning(f"Force-cancelling {len(pending)} background tasks after 30s timeout")
+            for t in pending:
+                t.cancel()
+
     logger.info("Application shutting down")
 
 
@@ -77,11 +113,15 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS configuration
 # Note: iOS apps don't send Origin headers the same way browsers do,
 # so we need permissive settings for mobile app compatibility.
+# In production, set ALLOWED_ORIGINS to specific origins (e.g. your Railway domain).
+if ALLOWED_ORIGINS == ["*"]:
+    logger.warning("CORS allows ALL origins — set ALLOWED_ORIGINS in production")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 

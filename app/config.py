@@ -27,8 +27,9 @@ NOTION_CLIENT_ID = os.getenv("NOTION_CLIENT_ID")
 NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET")
 NOTION_REDIRECT_URI = os.getenv("NOTION_REDIRECT_URI", "https://watchlater.up.railway.app/auth/notion/callback")
 
-# CORS
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+# CORS — restrict to known origins in production; "*" allows any origin
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "*").strip()
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -40,7 +41,7 @@ FREE_TIER_LIMIT = 10
 ADMIN_TIER_LIMIT = 100
 
 # Developer overrides (user IDs that get admin-tier limits)
-DEVELOPER_USER_IDS = os.getenv("DEVELOPER_USER_IDS", "").split(",")
+DEVELOPER_USER_IDS = [uid.strip() for uid in os.getenv("DEVELOPER_USER_IDS", "").split(",") if uid.strip()]
 
 # Preferred transcript languages (shared across all extraction methods)
 PREFERRED_LANGUAGES = [
@@ -71,19 +72,20 @@ def setup_logging():
 
 def validate_startup():
     """Validate critical configuration at startup."""
+    _logger = logging.getLogger(__name__)
     warnings = []
-    
+
     if not GEMINI_API_KEY:
         warnings.append("GEMINI_API_KEY not set - summarization will fail")
     else:
-        print("✓ Gemini API key configured")
-    
+        _logger.info("Gemini API key configured")
+
     if not SUPABASE_URL or not SUPABASE_KEY:
         warnings.append("Supabase credentials not set - multi-user mode disabled")
     else:
-        print("✓ Supabase configured")
-    
+        _logger.info("Supabase configured")
+
     for warning in warnings:
-        print(f"⚠ WARNING: {warning}")
-    
+        _logger.warning(warning)
+
     return len(warnings) == 0
