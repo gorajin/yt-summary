@@ -5,7 +5,6 @@ Provides the /summarize endpoint for processing YouTube videos asynchronously.
 Jobs are created immediately and processed in the background.
 """
 
-import asyncio
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -212,8 +211,9 @@ async def summarize(request: Request, body: SummarizeRequest, user: dict = Depen
         job = await create_job(user["id"], body.url)
         logger.info(f"Created job {job.id[:8]} for user {user['id']}: {body.url}")
         
-        # Spawn background task
-        asyncio.create_task(
+        # Spawn tracked background task (errors are logged, task is drained on shutdown)
+        from main import track_background_task
+        track_background_task(
             process_summarization_job(
                 job_id=job.id,
                 user=user,
@@ -370,7 +370,8 @@ async def ingest(request: Request, body: IngestRequest, user: dict = Depends(get
         job = await create_job(user["id"], body.url)
         logger.info(f"Created ingest job {job.id[:8]}: type={source_type.value}, url={body.url}")
         
-        asyncio.create_task(
+        from main import track_background_task
+        track_background_task(
             process_ingest_job(
                 job_id=job.id,
                 user=user,

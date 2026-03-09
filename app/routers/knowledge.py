@@ -5,7 +5,6 @@ Provides endpoints for building, retrieving, and updating
 a user's cross-video knowledge map.
 """
 
-import asyncio
 import logging
 from fastapi import APIRouter, Depends, Request, HTTPException
 from slowapi import Limiter
@@ -77,8 +76,9 @@ async def build_map(request: Request, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning(f"Job creation failed: {e}")
     
-    # Run the build in the background
-    asyncio.create_task(_build_map_job(job_id, user_id, user))
+    # Run the build in a tracked background task
+    from main import track_background_task
+    track_background_task(_build_map_job(job_id, user_id, user))
     
     return {"jobId": job_id, "message": "Knowledge map build started"}
 
@@ -93,7 +93,7 @@ async def _build_map_job(job_id: str, user_id: str, user: dict):
         if not knowledge_map.topics:
             await update_job(
                 job_id,
-                status=JobStatus.COMPLETED,
+                status=JobStatus.COMPLETE,
                 progress=100,
                 result={"knowledgeMap": knowledge_map.to_dict(), "message": "No topics found"},
             )
@@ -122,7 +122,7 @@ async def _build_map_job(job_id: str, user_id: str, user: dict):
         
         await update_job(
             job_id,
-            status=JobStatus.COMPLETED,
+            status=JobStatus.COMPLETE,
             progress=100,
             stage="Done!",
             result={
