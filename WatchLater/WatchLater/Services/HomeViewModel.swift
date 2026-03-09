@@ -136,6 +136,7 @@ class HomeViewModel: ObservableObject {
 
     
     private func startProgressSimulation() {
+        stopProgressTimer()  // Invalidate any existing timer to prevent leaks
         currentStage = .fetchingTranscript
         stageProgress = 0.0
         advanceProgressWithinStage()
@@ -181,8 +182,12 @@ class HomeViewModel: ObservableObject {
     
     private func stallOnLastStage() {
         // Slow progress on last stage - API will complete and dismiss
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
+        stopProgressTimer()  // Invalidate previous timer before creating new one
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
             Task { @MainActor in
                 if self.stageProgress < 0.95 {
                     self.stageProgress += 0.02  // Very slow progress

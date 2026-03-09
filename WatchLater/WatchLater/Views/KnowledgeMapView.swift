@@ -45,20 +45,28 @@ struct KnowledgeMapView: View {
     
     // Graph view renders only the top topics by importance to avoid iOS OOM
     private let graphTopicLimit = 25
-    
+
+    /// Pre-sorted topics by importance (descending).
+    /// Caching the sort avoids O(n log n) on every SwiftUI redraw.
+    @State private var _sortedTopicsCache: [APIService.TopicData]?
+
+    private var sortedAllTopics: [APIService.TopicData] {
+        if let cached = _sortedTopicsCache { return cached }
+        return allTopics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
+    }
+
     private var graphTopics: [APIService.TopicData] {
         if searchText.isEmpty {
-            let sorted = topics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
-            return Array(sorted.prefix(graphTopicLimit))
+            return Array(sortedAllTopics.prefix(graphTopicLimit))
         } else {
             // Include matching topics AND their 1-hop neighbors for context
             var includedNames = Set(topics.map { $0.name })
-            
+
             for conn in allConnections {
                 if includedNames.contains(conn.from) { includedNames.insert(conn.to) }
                 else if includedNames.contains(conn.to) { includedNames.insert(conn.from) }
             }
-            
+
             let expandedTopics = allTopics.filter { includedNames.contains($0.name) }
             let sorted = expandedTopics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
             return Array(sorted.prefix(graphTopicLimit))
@@ -371,6 +379,8 @@ struct KnowledgeMapView: View {
         
         do {
             mapResponse = try await APIService.shared.getKnowledgeMap(authToken: token)
+            // Invalidate sorted cache so it's recomputed from fresh data
+            _sortedTopicsCache = mapResponse?.knowledgeMap?.topics.sorted { ($0.importance ?? 5) > ($1.importance ?? 5) }
         } catch {
             print("Knowledge Map: Failed to load: \(error)")
         }
