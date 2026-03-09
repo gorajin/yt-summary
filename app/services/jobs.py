@@ -5,15 +5,21 @@ Persists jobs in Supabase for durability across server restarts.
 Falls back to in-memory storage if Supabase is unavailable.
 """
 
+import asyncio
 import uuid
 import json
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of jobs to hold in the in-memory fallback store.
+# When exceeded, the oldest jobs are evicted first.
+_FALLBACK_MAX_SIZE = 500
 
 
 class JobStatus(str, Enum):
@@ -40,7 +46,9 @@ class Job:
 
 
 # In-memory fallback store (used only if Supabase is unavailable)
-_fallback_jobs: Dict[str, Job] = {}
+# Uses OrderedDict for LRU-style eviction when _FALLBACK_MAX_SIZE is reached.
+_fallback_jobs: OrderedDict[str, Job] = OrderedDict()
+_fallback_lock = asyncio.Lock()
 
 
 def _get_supabase():
@@ -88,9 +96,14 @@ async def create_job(user_id: str, youtube_url: str) -> Job:
         except Exception as e:
             logger.warning(f"Supabase job create failed, using fallback: {e}")
     
-    # Fallback to in-memory
+    # Fallback to in-memory (with lock and eviction)
     job = Job(id=job_id, user_id=user_id, youtube_url=youtube_url)
-    _fallback_jobs[job_id] = job
+    async with _fallback_lock:
+        _fallback_jobs[job_id] = job
+        # Evict oldest jobs if we've exceeded the cap
+        while len(_fallback_jobs) > _FALLBACK_MAX_SIZE:
+            evicted_id, _ = _fallback_jobs.popitem(last=False)
+            logger.debug("Evicted oldest fallback job %s", evicted_id[:8])
     logger.info(f"Job {job_id[:8]} created in memory (fallback)")
     return job
 
@@ -108,7 +121,8 @@ async def get_job(job_id: str) -> Optional[Job]:
             logger.warning(f"Supabase job get failed, checking fallback: {e}")
     
     # Fallback
-    return _fallback_jobs.get(job_id)
+    async with _fallback_lock:
+        return _fallback_jobs.get(job_id)
 
 
 async def update_job(
@@ -143,22 +157,23 @@ async def update_job(
             logger.warning(f"Supabase job update failed, using fallback: {e}")
     
     # Fallback to in-memory
-    job = _fallback_jobs.get(job_id)
-    if not job:
-        return None
-    
-    if status is not None:
-        job.status = status
-    if progress is not None:
-        job.progress = progress
-    if stage is not None:
-        job.stage = stage
-    if result is not None:
-        job.result = result
-    if error is not None:
-        job.error = error
-    job.updated_at = datetime.utcnow()
-    return job
+    async with _fallback_lock:
+        job = _fallback_jobs.get(job_id)
+        if not job:
+            return None
+
+        if status is not None:
+            job.status = status
+        if progress is not None:
+            job.progress = progress
+        if stage is not None:
+            job.stage = stage
+        if result is not None:
+            job.result = result
+        if error is not None:
+            job.error = error
+        job.updated_at = datetime.utcnow()
+        return job
 
 
 async def cleanup_old_jobs(max_age_hours: int = 24) -> int:
@@ -174,11 +189,12 @@ async def cleanup_old_jobs(max_age_hours: int = 24) -> int:
             logger.warning(f"Supabase job cleanup failed: {e}")
     
     # Fallback: clean in-memory store
-    cutoff = datetime.utcnow()
-    to_remove = [
-        job_id for job_id, job in _fallback_jobs.items()
-        if (cutoff - job.created_at).total_seconds() > max_age_hours * 3600
-    ]
-    for job_id in to_remove:
-        del _fallback_jobs[job_id]
-    return len(to_remove)
+    async with _fallback_lock:
+        cutoff = datetime.utcnow()
+        to_remove = [
+            jid for jid, job in _fallback_jobs.items()
+            if (cutoff - job.created_at).total_seconds() > max_age_hours * 3600
+        ]
+        for jid in to_remove:
+            del _fallback_jobs[jid]
+        return len(to_remove)
