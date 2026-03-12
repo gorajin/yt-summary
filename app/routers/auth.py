@@ -8,6 +8,7 @@ Provides endpoints for:
 """
 
 import json
+import time
 import base64
 import logging
 import secrets
@@ -55,6 +56,19 @@ router = APIRouter(tags=["auth"])
 
 # Rate limiter for abuse prevention
 limiter = Limiter(key_func=get_remote_address)
+
+# In-memory OAuth state store: {state_token: (user_id, created_at)}
+# States expire after 10 minutes. Pruned lazily on each new auth start.
+_OAUTH_STATE_STORE: dict = {}
+_OAUTH_STATE_TTL = 600  # seconds
+
+
+def _prune_expired_states():
+    """Remove expired OAuth state entries."""
+    now = time.time()
+    expired = [k for k, (_, created) in _OAUTH_STATE_STORE.items() if now - created > _OAUTH_STATE_TTL]
+    for k in expired:
+        del _OAUTH_STATE_STORE[k]
 
 
 # ============ Auth Helpers ============
@@ -309,13 +323,19 @@ async def downgrade_subscription(request: Request, user: dict = Depends(get_curr
 
 @router.get("/auth/notion")
 @limiter.limit("10/minute")
-async def notion_auth_start(request: Request, user_id: str):
-    """Start Notion OAuth flow."""
+async def notion_auth_start(request: Request, user: dict = Depends(get_current_user)):
+    """Start Notion OAuth flow. Requires authentication."""
     if not NOTION_CLIENT_ID:
         raise HTTPException(status_code=500, detail="Notion OAuth not configured")
-    
-    state = f"{user_id}:{secrets.token_urlsafe(16)}"
-    
+
+    user_id = user["id"]
+    state_token = secrets.token_urlsafe(32)
+    state = f"{user_id}:{state_token}"
+
+    # Store state for CSRF validation in callback
+    _prune_expired_states()
+    _OAUTH_STATE_STORE[state_token] = (user_id, time.time())
+
     auth_url = (
         f"https://api.notion.com/v1/oauth/authorize"
         f"?client_id={NOTION_CLIENT_ID}"
@@ -324,7 +344,7 @@ async def notion_auth_start(request: Request, user_id: str):
         f"&redirect_uri={NOTION_REDIRECT_URI}"
         f"&state={state}"
     )
-    
+
     return {"auth_url": auth_url}
 
 
@@ -336,8 +356,28 @@ async def notion_auth_callback(request: Request, code: str, state: str):
         if not NOTION_CLIENT_SECRET or not NOTION_CLIENT_ID:
             logger.error("Notion OAuth not configured")
             return RedirectResponse(url="watchlater://notion-connected?success=false&error=server_not_configured")
-        
-        user_id = state.split(":")[0]
+
+        # Validate CSRF state token
+        parts = state.split(":", 1)
+        if len(parts) != 2:
+            logger.warning("Notion OAuth callback: malformed state parameter")
+            return RedirectResponse(url="watchlater://notion-connected?success=false&error=invalid_state")
+
+        user_id, state_token = parts
+        stored = _OAUTH_STATE_STORE.pop(state_token, None)
+        if not stored:
+            logger.warning("Notion OAuth callback: unknown or expired state token")
+            return RedirectResponse(url="watchlater://notion-connected?success=false&error=invalid_state")
+
+        stored_user_id, created_at = stored
+        if time.time() - created_at > _OAUTH_STATE_TTL:
+            logger.warning("Notion OAuth callback: expired state token")
+            return RedirectResponse(url="watchlater://notion-connected?success=false&error=expired_state")
+
+        if stored_user_id != user_id:
+            logger.warning("Notion OAuth callback: user_id mismatch in state")
+            return RedirectResponse(url="watchlater://notion-connected?success=false&error=invalid_state")
+
         logger.info(f"Notion OAuth callback for user: {user_id}")
         
         token_url = "https://api.notion.com/v1/oauth/token"

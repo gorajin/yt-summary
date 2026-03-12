@@ -6,14 +6,55 @@ same Gemini pipeline can process any content uniformly.
 """
 
 import re
+import socket
 import logging
+import ipaddress
 import urllib.error
 import urllib.request
 from typing import Optional, List, Tuple
+from urllib.parse import urlparse
 
 from ..models import SourceType, TranscriptSegment
 
 logger = logging.getLogger(__name__)
+
+
+# ============ SSRF Protection ============
+
+def _validate_url_for_fetch(url: str) -> str:
+    """Validate a URL is safe to fetch (no SSRF).
+
+    Rejects:
+    - Non-http(s) schemes (file://, ftp://, gopher://, etc.)
+    - Private/reserved IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x)
+    - Loopback and link-local addresses
+
+    Returns the validated URL.
+    Raises ValueError if the URL is unsafe.
+    """
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"Unsupported URL scheme: {parsed.scheme!r}. Only http and https are allowed."
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: no hostname found.")
+
+    # Resolve hostname to IP and check for private ranges
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+
+    for family, _type, _proto, _canonname, sockaddr in addr_info:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_reserved or ip.is_loopback or ip.is_link_local:
+            raise ValueError("URL resolves to a private/reserved IP address. Access denied.")
+
+    return url
 
 # ============ Source Detection ============
 
@@ -72,7 +113,10 @@ def extract_article(url: str) -> Tuple[List[TranscriptSegment], str]:
         (segments, title)
     """
     logger.info(f"Extracting article from: {url}")
-    
+
+    # SSRF protection: reject private IPs and non-http(s) schemes
+    _validate_url_for_fetch(url)
+
     # Fetch the page
     try:
         req = urllib.request.Request(url, headers={
@@ -216,7 +260,10 @@ def extract_pdf(url: Optional[str] = None, content: Optional[str] = None) -> Tup
         raise ValueError("Either url or content must be provided for PDF extraction")
     
     logger.info(f"Downloading PDF from: {url}")
-    
+
+    # SSRF protection: reject private IPs and non-http(s) schemes
+    _validate_url_for_fetch(url)
+
     # Download PDF
     try:
         req = urllib.request.Request(url, headers={

@@ -118,7 +118,7 @@ class ShareViewController: UIViewController {
                 }
                 
                 // Initiate job and get jobId (async polling architecture)
-                let jobId = try await initiateJobWithTokenRefresh(url: url, token: token, transcript: transcript ?? "")
+                let jobId = try await initiateJobWithTokenRefresh(url: url, token: token, transcript: transcript ?? "", summaryFormat: summaryFormat, language: language)
                 
                 // Poll for completion
                 let result = try await pollJobStatus(jobId: jobId, token: token)
@@ -139,9 +139,9 @@ class ShareViewController: UIViewController {
     }
     
     /// Initiates a summarization job with automatic retry on token expiry
-    private func initiateJobWithTokenRefresh(url: String, token: String, transcript: String) async throws -> String {
+    private func initiateJobWithTokenRefresh(url: String, token: String, transcript: String, summaryFormat: String, language: String) async throws -> String {
         do {
-            return try await initiateJob(url: url, token: token, transcript: transcript)
+            return try await initiateJob(url: url, token: token, transcript: transcript, summaryFormat: summaryFormat, language: language)
         } catch let error as NSError where error.code == 401 {
             os_log("Token expired, attempting refresh", log: shareLog, type: .info)
             

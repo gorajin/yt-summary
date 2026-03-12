@@ -208,3 +208,91 @@ class TestStripeWebhook:
             )
 
         assert response.status_code == 400
+
+    def test_duplicate_event_is_idempotent(self, client, mock_supabase):
+        """Sending the same event twice should return 200 both times."""
+        event = {
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "metadata": {"user_id": "test-user-123"},
+                    "subscription": "sub_dup_001",
+                    "customer": "cus_dup_001",
+                }
+            }
+        }
+
+        with patch("stripe.Webhook.construct_event", return_value=event):
+            resp1 = client.post(
+                "/subscription/stripe-webhook",
+                content=json.dumps(event),
+                headers={"stripe-signature": "test_sig"},
+            )
+            resp2 = client.post(
+                "/subscription/stripe-webhook",
+                content=json.dumps(event),
+                headers={"stripe-signature": "test_sig"},
+            )
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+
+    def test_checkout_missing_metadata_no_crash(self, client, mock_supabase):
+        """checkout.session.completed without user_id in metadata should not crash."""
+        event = {
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "metadata": {},  # No user_id
+                    "subscription": "sub_orphan_001",
+                    "customer": "cus_orphan_001",
+                }
+            }
+        }
+
+        with patch("stripe.Webhook.construct_event", return_value=event):
+            response = client.post(
+                "/subscription/stripe-webhook",
+                content=json.dumps(event),
+                headers={"stripe-signature": "test_sig"},
+            )
+
+        # Should acknowledge the event without crashing
+        assert response.status_code == 200
+        assert response.json() == {"received": True}
+
+    def test_unknown_event_type_returns_200(self, client, mock_supabase):
+        """Unhandled event types should be acknowledged (not crash)."""
+        event = {
+            "type": "invoice.payment_succeeded",
+            "data": {
+                "object": {
+                    "customer": "cus_test_123",
+                    "amount_paid": 999,
+                }
+            }
+        }
+
+        with patch("stripe.Webhook.construct_event", return_value=event):
+            response = client.post(
+                "/subscription/stripe-webhook",
+                content=json.dumps(event),
+                headers={"stripe-signature": "test_sig"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"received": True}
+
+    def test_empty_body_rejected(self, client):
+        """Empty body should trigger a ValueError from construct_event."""
+        with patch(
+            "stripe.Webhook.construct_event",
+            side_effect=ValueError("No payload"),
+        ):
+            response = client.post(
+                "/subscription/stripe-webhook",
+                content=b"",
+                headers={"stripe-signature": "test_sig"},
+            )
+
+        assert response.status_code == 400
