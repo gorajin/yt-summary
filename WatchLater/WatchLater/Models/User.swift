@@ -22,6 +22,7 @@ struct SummaryResponse: Codable {
     let success: Bool
     let title: String?
     let notionUrl: String?
+    let summaryId: String?
     let error: String?
     let remaining: Int?
 }

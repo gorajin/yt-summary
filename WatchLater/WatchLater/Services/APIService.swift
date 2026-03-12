@@ -53,6 +53,7 @@ class APIService {
                 success: response.success,
                 title: response.title,
                 notionUrl: response.notionUrl,
+                summaryId: response.summaryId,
                 error: response.error,
                 remaining: remaining
             )
@@ -164,16 +165,17 @@ class APIService {
                             success: result["success"] as? Bool ?? true,
                             title: result["title"] as? String,
                             notionUrl: result["notionUrl"] as? String,
+                            summaryId: result["summaryId"] as? String,
                             error: nil,
                             remaining: nil
                         )
                     }
-                    return SummaryResponse(success: true, title: "Summary saved!", notionUrl: nil, error: nil, remaining: nil)
+                    return SummaryResponse(success: true, title: "Summary saved!", notionUrl: nil, summaryId: nil, error: nil, remaining: nil)
                 }
-                
+
                 if status == "failed" {
                     let error = json["error"] as? String ?? "Processing failed"
-                    return SummaryResponse(success: false, title: nil, notionUrl: nil, error: error, remaining: nil)
+                    return SummaryResponse(success: false, title: nil, notionUrl: nil, summaryId: nil, error: error, remaining: nil)
                 }
                 
                 // Wait 3 seconds before next poll
@@ -252,6 +254,58 @@ class APIService {
         return url
     }
     
+    // MARK: - Export Summary
+
+    struct ExportResponse {
+        let content: String
+        let filename: String
+        let contentType: String
+    }
+
+    /// Export a summary in the specified format (markdown, html, text)
+    func exportSummary(summaryId: String, format: String = "markdown", authToken: String) async throws -> ExportResponse {
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/summaries/\(summaryId)/export?format=\(format)")!
+
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+
+        if httpResponse.statusCode == 404 {
+            throw APIError.serverError("Summary not available for export")
+        }
+
+        if httpResponse.statusCode != 200 {
+            throw APIError.serverError("Export failed (\(httpResponse.statusCode))")
+        }
+
+        let content = String(data: data, encoding: .utf8) ?? ""
+
+        // Extract filename from Content-Disposition header
+        let disposition = httpResponse.value(forHTTPHeaderField: "Content-Disposition") ?? ""
+        let filename: String
+        if let range = disposition.range(of: "filename=\""),
+           let endRange = disposition[range.upperBound...].range(of: "\"") {
+            filename = String(disposition[range.upperBound..<endRange.lowerBound])
+        } else {
+            let ext = format == "html" ? "html" : format == "text" ? "txt" : "md"
+            filename = "summary.\(ext)"
+        }
+
+        let mediaType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "text/plain"
+
+        return ExportResponse(content: content, filename: filename, contentType: mediaType)
+    }
+
     // MARK: - Knowledge Map
     
     struct KnowledgeMapResponse: Codable {

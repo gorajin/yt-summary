@@ -1,5 +1,37 @@
 import SwiftUI
 
+// MARK: - Save Target
+
+enum SaveTarget: String, CaseIterable {
+    case notion = "notion"
+    case obsidian = "obsidian"
+    case appleNotes = "apple_notes"
+    case files = "files"
+
+    var displayName: String {
+        switch self {
+        case .notion: return "Notion"
+        case .obsidian: return "Obsidian"
+        case .appleNotes: return "Notes"
+        case .files: return "Files"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .notion: return "n.square"
+        case .obsidian: return "diamond"
+        case .appleNotes: return "note.text"
+        case .files: return "folder"
+        }
+    }
+
+    /// Whether this target requires Notion to be connected
+    var requiresNotion: Bool {
+        self == .notion
+    }
+}
+
 struct HomeView: View {
     @EnvironmentObject var authManager: AuthManager
     @EnvironmentObject var storeManager: StoreManager
@@ -7,9 +39,15 @@ struct HomeView: View {
     @State private var urlInput = ""
     @State private var showingSettings = false
     @State private var showingPaywall = false
-    
+    @State private var showingExportSheet = false
+
     @AppStorage("summaryFormat") private var summaryFormat: String = "detailed"
     @AppStorage("summaryLanguage") private var summaryLanguage: String = "en"
+    @AppStorage("saveTarget") private var saveTargetRaw: String = "notion"
+
+    private var saveTarget: SaveTarget {
+        SaveTarget(rawValue: saveTargetRaw) ?? .notion
+    }
     
     /// Extract video ID using shared logic (no more duplication)
     private var videoId: String? {
@@ -49,8 +87,8 @@ struct HomeView: View {
                         .redacted(reason: .placeholder)
                         .shimmer()
                     } else {
-                    // Notion Connection Status
-                    if !viewModel.isNotionConnected {
+                    // Notion Connection Status (only shown when Notion is selected)
+                    if saveTarget == .notion && !viewModel.isNotionConnected {
                         NotionConnectionCard(onConnect: connectNotion)
                     }
                     
@@ -143,7 +181,7 @@ struct HomeView: View {
                                     .background(Color(.systemGray6))
                                     .cornerRadius(8)
                                 }
-                                
+
                                 Menu {
                                     Picker("Language", selection: $summaryLanguage) {
                                         Text("English").tag("en")
@@ -166,11 +204,31 @@ struct HomeView: View {
                                     .background(Color(.systemGray6))
                                     .cornerRadius(8)
                                 }
-                                
+
                                 Spacer()
                             }
                             .foregroundStyle(.primary)
                             .font(.subheadline)
+
+                            // Save Target Picker
+                            HStack(spacing: 0) {
+                                ForEach(SaveTarget.allCases, id: \.rawValue) { target in
+                                    Button(action: { saveTargetRaw = target.rawValue }) {
+                                        VStack(spacing: 4) {
+                                            Image(systemName: target.icon)
+                                                .font(.system(size: 16))
+                                            Text(target.displayName)
+                                                .font(.caption2)
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(saveTarget == target ? Color.red.opacity(0.1) : Color.clear)
+                                        .foregroundStyle(saveTarget == target ? .red : .secondary)
+                                    }
+                                }
+                            }
+                            .background(Color(.systemGray6))
+                            .cornerRadius(10)
                         }
                         
                         // Summarize Button with Progress UI
@@ -225,7 +283,7 @@ struct HomeView: View {
                         .foregroundStyle(.white)
                         .fontWeight(.semibold)
                         .cornerRadius(12)
-                        .disabled(urlInput.isEmpty || viewModel.isProcessing || !viewModel.isNotionConnected)
+                        .disabled(urlInput.isEmpty || viewModel.isProcessing || (saveTarget.requiresNotion && !viewModel.isNotionConnected))
                     }
                     .padding()
                     .background(.white)
@@ -298,6 +356,14 @@ struct HomeView: View {
             .sheet(isPresented: $showingPaywall) {
                 PaywallView()
             }
+            .sheet(isPresented: $showingExportSheet) {
+                if let exportContent = viewModel.lastExportContent {
+                    ExportShareSheet(content: exportContent, saveTarget: saveTarget) {
+                        showingExportSheet = false
+                        urlInput = ""
+                    }
+                }
+            }
             // Auto-present paywall when quota is exceeded (Fix #1)
             .onChange(of: viewModel.quotaExceeded) { _, exceeded in
                 if exceeded {
@@ -359,11 +425,22 @@ struct HomeView: View {
         // Haptic feedback
         let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
         impactFeedback.impactOccurred()
-        
+
         Task {
-            await viewModel.summarize(url: urlInput, token: authManager.accessToken ?? "", summaryFormat: summaryFormat, language: summaryLanguage)
+            await viewModel.summarize(
+                url: urlInput,
+                token: authManager.accessToken ?? "",
+                summaryFormat: summaryFormat,
+                language: summaryLanguage,
+                saveTarget: saveTarget
+            )
             if viewModel.isSuccess {
-                urlInput = ""
+                // For non-Notion targets, show the export sheet
+                if saveTarget != .notion, let exportContent = viewModel.lastExportContent {
+                    showingExportSheet = true
+                } else {
+                    urlInput = ""
+                }
             }
         }
     }
@@ -536,5 +613,129 @@ struct ShimmerModifier: ViewModifier {
 extension View {
     func shimmer() -> some View {
         modifier(ShimmerModifier())
+    }
+}
+
+// MARK: - Export Share Sheet
+
+struct ExportShareSheet: View {
+    let content: HomeViewModel.ExportContent
+    let saveTarget: SaveTarget
+    let onDismiss: () -> Void
+
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.green)
+
+                Text("Summary Ready!")
+                    .font(.title2)
+                    .fontWeight(.bold)
+
+                Text(content.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                VStack(spacing: 12) {
+                    if saveTarget == .obsidian {
+                        Button(action: openInObsidian) {
+                            Label("Open in Obsidian", systemImage: "diamond")
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(.purple)
+                                .foregroundStyle(.white)
+                                .fontWeight(.semibold)
+                                .cornerRadius(12)
+                        }
+                    }
+
+                    Button(action: shareViaSheet) {
+                        Label(
+                            saveTarget == .appleNotes ? "Save to Notes" : "Save to Files",
+                            systemImage: saveTarget == .appleNotes ? "note.text" : "folder"
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(.blue)
+                        .foregroundStyle(.white)
+                        .fontWeight(.semibold)
+                        .cornerRadius(12)
+                    }
+
+                    Button(action: copyToClipboard) {
+                        Label("Copy to Clipboard", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(.systemGray5))
+                            .foregroundStyle(.primary)
+                            .fontWeight(.medium)
+                            .cornerRadius(12)
+                    }
+                }
+                .padding(.horizontal)
+
+                Spacer()
+            }
+            .padding(.top, 40)
+            .navigationTitle("Export")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        onDismiss()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func openInObsidian() {
+        // Obsidian URL scheme: obsidian://new?name=Title&content=...
+        let name = content.filename.replacingOccurrences(of: ".md", with: "")
+        var components = URLComponents()
+        components.scheme = "obsidian"
+        components.host = "new"
+        components.queryItems = [
+            URLQueryItem(name: "name", value: name),
+            URLQueryItem(name: "content", value: content.text),
+        ]
+        if let url = components.url {
+            UIApplication.shared.open(url)
+        } else {
+            // Fallback to share sheet
+            shareViaSheet()
+        }
+    }
+
+    private func shareViaSheet() {
+        let activityItems: [Any]
+        if saveTarget == .appleNotes {
+            // Apple Notes handles HTML natively
+            activityItems = [content.text]
+        } else {
+            // For Files: create a temporary file
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(content.filename)
+            try? content.text.write(to: tempURL, atomically: true, encoding: .utf8)
+            activityItems = [tempURL]
+        }
+
+        let activityVC = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            rootVC.present(activityVC, animated: true)
+        }
+    }
+
+    private func copyToClipboard() {
+        UIPasteboard.general.string = content.text
+        onDismiss()
+        dismiss()
     }
 }

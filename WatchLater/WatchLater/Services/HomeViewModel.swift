@@ -15,10 +15,19 @@ class HomeViewModel: ObservableObject {
     @Published var isSuccess = false
     @Published var summariesRemaining: Int?
     @Published var quotaExceeded = false  // Triggers paywall
-    
+
     // Progress tracking
     @Published var currentStage: SummarizationStage = .fetchingTranscript
     @Published var stageProgress: Double = 0.0  // 0.0 - 1.0 within current stage
+
+    // Export content (for non-Notion save targets)
+    @Published var lastExportContent: ExportContent?
+
+    struct ExportContent {
+        let text: String
+        let filename: String
+        let title: String
+    }
     
     private let api = APIService.shared
     private var progressTimer: Timer?
@@ -64,37 +73,60 @@ class HomeViewModel: ObservableObject {
     
     // MARK: - Summarize with Client-Side Transcript Fetching
     
-    func summarize(url: String, token: String, summaryFormat: String = "detailed", language: String = "en") async {
+    func summarize(url: String, token: String, summaryFormat: String = "detailed", language: String = "en", saveTarget: SaveTarget = .notion) async {
         isProcessing = true
         statusMessage = nil
         isSuccess = false
+        lastExportContent = nil
         currentStage = .fetchingTranscript
         stageProgress = 0.0
-        
+
         // Start progress simulation
         startProgressSimulation()
-        
+
         do {
-            // Phase 7: Fetch transcript client-side to bypass YouTube IP blocking
+            // Fetch transcript client-side to bypass YouTube IP blocking
             os_log("Starting client-side transcript fetch...", log: homeLog, type: .info)
             let transcript = await fetchTranscript(for: url)
-            
+
             if let transcript = transcript {
                 os_log("Got client transcript (%d chars)", log: homeLog, type: .info, transcript.count)
             } else {
                 os_log("Client-side transcript fetch failed, falling back to server", log: homeLog, type: .error)
             }
-            
+
             // Call API with transcript (or without as fallback)
             let response = try await api.summarize(url: url, transcript: transcript, authToken: token, summaryFormat: summaryFormat, language: language)
-            
+
             // Stop progress timer
             stopProgressTimer()
-            
+
             if response.success {
-                statusMessage = "✅ Saved: \(response.title ?? "Summary")"
-                isSuccess = true
                 summariesRemaining = response.remaining
+
+                // For non-Notion targets, fetch the export
+                if saveTarget != .notion {
+                    os_log("Fetching export for target: %{public}@", log: homeLog, type: .info, saveTarget.rawValue)
+                    let exportFormat = saveTarget == .appleNotes ? "html" : "markdown"
+                    if let summaryId = response.summaryId {
+                        let export = try await api.exportSummary(
+                            summaryId: summaryId,
+                            format: exportFormat,
+                            authToken: token
+                        )
+                        lastExportContent = ExportContent(
+                            text: export.content,
+                            filename: export.filename,
+                            title: response.title ?? "Summary"
+                        )
+                        statusMessage = "✅ Ready to save: \(response.title ?? "Summary")"
+                    } else {
+                        statusMessage = "✅ Saved: \(response.title ?? "Summary")"
+                    }
+                } else {
+                    statusMessage = "✅ Saved: \(response.title ?? "Summary")"
+                }
+                isSuccess = true
             } else {
                 statusMessage = response.error ?? "Unknown error"
                 isSuccess = false
@@ -103,13 +135,13 @@ class HomeViewModel: ObservableObject {
             stopProgressTimer()
             statusMessage = error.localizedDescription
             isSuccess = false
-            
+
             // Detect quota limit (429) and trigger paywall
             if let apiError = error as? APIError, case .rateLimited = apiError {
                 quotaExceeded = true
             }
         }
-        
+
         isProcessing = false
     }
     
