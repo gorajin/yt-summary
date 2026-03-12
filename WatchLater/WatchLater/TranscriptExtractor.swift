@@ -7,6 +7,9 @@
 //
 
 import Foundation
+import os.log
+
+private let transcriptLog = OSLog(subsystem: "com.watchlater.app", category: "TranscriptExtractor")
 
 /// Shared transcript extractor for YouTube videos.
 /// Handles client-side caption fetching with multiple strategies for robustness.
@@ -382,6 +385,6 @@ class TranscriptExtractor {
     }
     
     private func log(_ message: String) {
-        print("\(logPrefix) \(message)")
+        os_log("%{public}@ %{public}@", log: transcriptLog, type: .info, logPrefix, message)
     }
 }

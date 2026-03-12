@@ -1,4 +1,7 @@
 import SwiftUI
+import os.log
+
+private let appLog = OSLog(subsystem: "com.watchlater.app", category: "App")
 
 @main
 struct WatchLaterApp: App {
@@ -32,7 +35,7 @@ struct WatchLaterApp: App {
             do {
                 try authManager.handleOAuthCallback(url: url)
             } catch {
-                print("OAuth callback error: \(error)")
+                os_log("OAuth callback error: %{public}@", log: appLog, type: .error, "\(error)")
             }
         }
         
@@ -42,12 +45,12 @@ struct WatchLaterApp: App {
             let success = components?.queryItems?.first(where: { $0.name == "success" })?.value == "true"
             
             if success {
-                print("✓ Notion connected successfully!")
+                os_log("Notion connected successfully!", log: appLog, type: .info)
                 // Trigger profile refresh
                 authManager.notionJustConnected = true
             } else {
                 let error = components?.queryItems?.first(where: { $0.name == "error" })?.value ?? "Unknown error"
-                print("✗ Notion connection failed: \(error)")
+                os_log("Notion connection failed: %{public}@", log: appLog, type: .error, error)
             }
         }
     }

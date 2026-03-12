@@ -1,7 +1,20 @@
 node_modules/
-.env
 .DS_Store
 *.xcuserstate
+
+# Secrets & environment
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.cer
+*.mobileprovision
+serviceAccountKey*.json
+credentials*.json
+google-services.json
+GoogleService-Info.plist
 
 # Python
 __pycache__/
@@ -12,12 +25,27 @@ __pycache__/
 .venv/
 dist/
 build/
+*.whl
 
 # Xcode
 DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
+*.ipa
+*.dSYM.zip
+*.dSYM
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+
+# Logs & crash reports
+*.log
+crash-*.ips
+
+# OS artifacts
+Thumbs.db
+Desktop.ini

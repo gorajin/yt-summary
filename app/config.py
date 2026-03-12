@@ -27,6 +27,13 @@ NOTION_CLIENT_ID = os.getenv("NOTION_CLIENT_ID")
 NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET")
 NOTION_REDIRECT_URI = os.getenv("NOTION_REDIRECT_URI", "https://watchlater.up.railway.app/auth/notion/callback")
 
+# Stripe (Web Subscriptions)
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_PRO_MONTHLY_PRICE_ID = os.getenv("STRIPE_PRO_MONTHLY_PRICE_ID")
+STRIPE_PRO_YEARLY_PRICE_ID = os.getenv("STRIPE_PRO_YEARLY_PRICE_ID")
+WEB_APP_URL = os.getenv("WEB_APP_URL", "https://app.watchlater.dev")
+
 # CORS — restrict to known origins in production; "*" allows any origin
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "*").strip()
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
@@ -71,14 +78,22 @@ def setup_logging():
 # ============ Startup Validation ============
 
 def validate_startup():
-    """Validate critical configuration at startup."""
+    """Validate critical configuration at startup.
+
+    Raises RuntimeError if GEMINI_API_KEY is missing (fatal).
+    Logs warnings for non-critical missing config (Supabase).
+    """
     _logger = logging.getLogger(__name__)
     warnings = []
 
+    # GEMINI_API_KEY is required — the app cannot function without it
     if not GEMINI_API_KEY:
-        warnings.append("GEMINI_API_KEY not set - summarization will fail")
-    else:
-        _logger.info("Gemini API key configured")
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set. "
+            "This variable is required for the app to function. "
+            "Set it in your environment or .env file."
+        )
+    _logger.info("Gemini API key configured")
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         warnings.append("Supabase credentials not set - multi-user mode disabled")

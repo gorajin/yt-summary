@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+import os.log
+
+private let homeLog = OSLog(subsystem: "com.watchlater.app", category: "HomeViewModel")
 
 // SummarizationStage is defined in the shared SummarizationStage.swift file
 
@@ -50,11 +53,11 @@ class HomeViewModel: ObservableObject {
             
             // Apply and persist config
             config.save()
-            print("Profile loaded: notionConnected=\(user.notionConnected)")
-            print("Extraction config loaded: v\(config.version) with \(config.captionTrackPatterns.count) patterns")
+            os_log("Profile loaded: notionConnected=%{public}@", log: homeLog, type: .info, "\(user.notionConnected)")
+            os_log("Extraction config loaded: v%d with %d patterns", log: homeLog, type: .info, config.version, config.captionTrackPatterns.count)
             
         } catch {
-            print("Failed to load profile or config: \(error)")
+            os_log("Failed to load profile or config: %{public}@", log: homeLog, type: .error, "\(error)")
         }
         isLoadingProfile = false
     }
@@ -73,13 +76,13 @@ class HomeViewModel: ObservableObject {
         
         do {
             // Phase 7: Fetch transcript client-side to bypass YouTube IP blocking
-            print("📝 Starting client-side transcript fetch...")
+            os_log("Starting client-side transcript fetch...", log: homeLog, type: .info)
             let transcript = await fetchTranscript(for: url)
             
             if let transcript = transcript {
-                print("📝 Got client transcript (\(transcript.count) chars)")
+                os_log("Got client transcript (%d chars)", log: homeLog, type: .info, transcript.count)
             } else {
-                print("⚠️ Client-side transcript fetch failed, falling back to server")
+                os_log("Client-side transcript fetch failed, falling back to server", log: homeLog, type: .error)
             }
             
             // Call API with transcript (or without as fallback)
@@ -121,14 +124,14 @@ class HomeViewModel: ObservableObject {
         // Fallback: WebKit-based extraction with JavaScript execution
         guard let videoId = transcriptExtractor.extractVideoId(from: url) else { return nil }
         
-        print("📱 Trying WebKit-based extraction...")
+        os_log("Trying WebKit-based extraction...", log: homeLog, type: .info)
         let webkitExtractor = WebKitTranscriptExtractor()
         if let transcript = await webkitExtractor.extractTranscript(videoId: videoId) {
-            print("✅ WebKit extraction succeeded (\(transcript.count) chars)")
+            os_log("WebKit extraction succeeded (%d chars)", log: homeLog, type: .info, transcript.count)
             return transcript
         }
         
-        print("❌ All extraction methods failed, will use server fallback")
+        os_log("All extraction methods failed, will use server fallback", log: homeLog, type: .error)
         return nil
     }
     

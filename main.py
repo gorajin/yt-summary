@@ -15,7 +15,10 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -53,6 +56,34 @@ def _log_task_exception(task: asyncio.Task):
     exc = task.exception()
     if exc:
         logger.error(f"Background task failed with unhandled exception: {exc}", exc_info=exc)
+
+
+# ============ Security Middleware ============
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to every response."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
+
+
+MAX_REQUEST_BODY_SIZE = 10_485_760  # 10 MB
+
+
+class RequestBodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject request bodies that exceed the configured size limit."""
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Request body too large. Maximum size is {MAX_REQUEST_BODY_SIZE // (1024 * 1024)} MB."},
+            )
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -109,6 +140,10 @@ app = FastAPI(
 # Add rate limiter to app state
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Security middleware (outermost — added first so it wraps everything)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestBodySizeLimitMiddleware)
 
 # CORS configuration
 # Note: iOS apps don't send Origin headers the same way browsers do,

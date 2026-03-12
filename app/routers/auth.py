@@ -31,6 +31,9 @@ from ..config import (
     FREE_TIER_LIMIT,
     ADMIN_TIER_LIMIT,
     DEVELOPER_USER_IDS,
+    STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET,
+    WEB_APP_URL,
 )
 from ..models import UserProfile
 
@@ -105,7 +108,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         raise
     except Exception as e:
         logger.error(f"Auth validation failed: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed. Please sign in again.")
 
 
 def check_rate_limit(user: dict) -> int:
@@ -358,7 +361,7 @@ async def notion_auth_callback(request: Request, code: str, state: str):
                     timeout=15.0
                 )
                 if token_response.status_code != 200:
-                    logger.error(f"Notion token exchange failed: {token_response.status_code} - {token_response.text}")
+                    logger.error(f"Notion token exchange failed: HTTP {token_response.status_code}")
                     return RedirectResponse(url="watchlater://notion-connected?success=false&error=token_exchange_failed")
                 token_data = token_response.json()
         except httpx.RequestError as e:
@@ -530,7 +533,7 @@ async def update_email_preferences(
     
     try:
         supabase.table("users").update(update_data).eq("id", user_id).execute()
-        
+
         return {
             "success": True,
             "email_digest_enabled": update_data.get("email_digest_enabled", user.get("email_digest_enabled", True)),
@@ -540,3 +543,128 @@ async def update_email_preferences(
     except Exception as e:
         logger.error(f"Failed to update email prefs for {user_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to update preferences")
+
+
+# ============ Stripe Web Subscriptions ============
+
+
+class StripeCheckoutRequest(BaseModel):
+    """Request to create a Stripe Checkout session."""
+    price_id: str
+
+
+@router.post("/subscription/stripe-checkout")
+@limiter.limit("10/minute")
+async def create_stripe_checkout(
+    request: Request,
+    body: StripeCheckoutRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Create a Stripe Checkout session for web subscriptions.
+
+    Returns the Stripe Checkout URL for the client to redirect to.
+    """
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Stripe is not configured")
+
+    import stripe
+    stripe.api_key = STRIPE_SECRET_KEY
+
+    user_id = user["id"]
+    user_email = user.get("email", "")
+
+    # Get or create Stripe customer
+    stripe_customer_id = user.get("stripe_customer_id")
+    if not stripe_customer_id:
+        customer = stripe.Customer.create(
+            email=user_email,
+            metadata={"user_id": user_id},
+        )
+        stripe_customer_id = customer.id
+        supabase.table("users").update({
+            "stripe_customer_id": stripe_customer_id,
+        }).eq("id", user_id).execute()
+        logger.info(f"Created Stripe customer {stripe_customer_id} for user {user_id}")
+
+    try:
+        session = stripe.checkout.Session.create(
+            customer=stripe_customer_id,
+            mode="subscription",
+            line_items=[{"price": body.price_id, "quantity": 1}],
+            success_url=f"{WEB_APP_URL}/?checkout=success",
+            cancel_url=f"{WEB_APP_URL}/pricing?checkout=cancelled",
+            metadata={"user_id": user_id},
+        )
+        return {"url": session.url}
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe checkout error for {user_id}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/subscription/stripe-webhook")
+async def stripe_webhook(request: Request):
+    """Handle Stripe webhook events.
+
+    Processes checkout.session.completed and customer.subscription.deleted
+    to sync subscription status with our database.
+    """
+    if not STRIPE_SECRET_KEY or not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="Stripe webhook not configured")
+
+    import stripe
+    stripe.api_key = STRIPE_SECRET_KEY
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    event_type = event["type"]
+    data = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        # Activate Pro subscription
+        user_id = data.get("metadata", {}).get("user_id")
+        stripe_subscription_id = data.get("subscription")
+        stripe_customer_id = data.get("customer")
+
+        if user_id:
+            update_data = {
+                "subscription_tier": "pro",
+                "stripe_subscription_id": stripe_subscription_id,
+                "updated_at": datetime.now().isoformat(),
+            }
+            if stripe_customer_id:
+                update_data["stripe_customer_id"] = stripe_customer_id
+
+            supabase.table("users").update(update_data).eq("id", user_id).execute()
+            logger.info(f"Stripe checkout completed: user={user_id}, sub={stripe_subscription_id}")
+        else:
+            logger.warning(f"Stripe checkout completed but no user_id in metadata")
+
+    elif event_type == "customer.subscription.deleted":
+        # Downgrade to free
+        stripe_customer_id = data.get("customer")
+        if stripe_customer_id:
+            result = supabase.table("users").select("id").eq(
+                "stripe_customer_id", stripe_customer_id
+            ).execute()
+            if result.data:
+                user_id = result.data[0]["id"]
+                supabase.table("users").update({
+                    "subscription_tier": "free",
+                    "stripe_subscription_id": None,
+                    "updated_at": datetime.now().isoformat(),
+                }).eq("id", user_id).execute()
+                logger.info(f"Stripe subscription deleted: user={user_id}")
+        else:
+            logger.warning("Stripe subscription deleted but no customer ID")
+
+    return {"received": True}

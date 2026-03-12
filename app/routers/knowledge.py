@@ -74,12 +74,13 @@ async def build_map(request: Request, user: dict = Depends(get_current_user)):
             "stage": "queued",
         }).execute()
     except Exception as e:
-        logger.warning(f"Job creation failed: {e}")
-    
+        logger.error(f"Job creation failed for knowledge map build: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start knowledge map build")
+
     # Run the build in a tracked background task
     from main import track_background_task
     track_background_task(_build_map_job(job_id, user_id, user))
-    
+
     return {"jobId": job_id, "message": "Knowledge map build started"}
 
 

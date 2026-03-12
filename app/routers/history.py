@@ -13,6 +13,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from .auth import get_current_user, supabase
+from ..services.youtube import extract_video_id
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ async def get_summaries(
         
     except Exception as e:
         logger.error(f"Error fetching summaries: {e}")
-        return []
+        raise HTTPException(status_code=500, detail="Failed to load summaries")
 
 
 @router.get("/summaries/{summary_id}")
@@ -157,13 +158,9 @@ async def export_summary_endpoint(
         if not summary.get("summary_json"):
             raise HTTPException(status_code=404, detail="Export not available — summary content is not stored in database")
         
-        # Extract video_id from youtube_url
+        # Extract video_id from youtube_url using validated parser
         yt_url = summary.get("youtube_url", "")
-        vid = ""
-        if "v=" in yt_url:
-            vid = yt_url.split("v=")[1].split("&")[0]
-        elif "youtu.be/" in yt_url:
-            vid = yt_url.split("youtu.be/")[1].split("?")[0]
+        vid = extract_video_id(yt_url) or ""
         
         try:
             content, content_type = export_summary(summary, fmt=format, video_id=vid)
@@ -173,7 +170,7 @@ async def export_summary_endpoint(
         # Build filename
         # Build filename — sanitize for safe download
         import re as _re
-        title_slug = _re.sub(r'[^\w\s-]', '', (summary.get("title") or "summary"))[:50].strip().replace(" ", "_")
+        title_slug = _re.sub(r'[^a-zA-Z0-9\s_-]', '', (summary.get("title") or "summary"))[:50].strip().replace(" ", "_")
         if not title_slug:
             title_slug = "summary"
         ext_map = {"markdown": "md", "md": "md", "html": "html", "text": "txt", "txt": "txt"}

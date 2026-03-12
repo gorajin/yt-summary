@@ -1,5 +1,8 @@
 import Foundation
 import Combine
+import os.log
+
+private let apiLog = OSLog(subsystem: "com.watchlater.app", category: "APIService")
 
 // NOTE: All configuration is centralized in Config.swift (AppConfig enum)
 // which is shared between the main app and Share Extension.
@@ -108,7 +111,7 @@ class APIService {
         
         let remaining = json["remaining"] as? Int
         
-        print("API: Job created: \(jobId.prefix(8))... (remaining: \(remaining ?? -1))")
+        os_log("Job created: %{public}@... (remaining: %d)", log: apiLog, type: .info, "\(jobId.prefix(8))", remaining ?? -1)
         return (jobId, remaining)
     }
     
@@ -139,21 +142,21 @@ class APIService {
                 }
                 
                 if httpResponse.statusCode != 200 {
-                    print("API: Poll \(attempt): HTTP \(httpResponse.statusCode)")
+                    os_log("Poll %d: HTTP %d", log: apiLog, type: .debug, attempt, httpResponse.statusCode)
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                     continue
                 }
                 
                 guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let status = json["status"] as? String else {
-                    print("API: Poll \(attempt): Invalid JSON response")
+                    os_log("Poll %d: Invalid JSON response", log: apiLog, type: .error, attempt)
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                     continue
                 }
                 
                 let progress = json["progress"] as? Int ?? 0
                 let stage = json["stage"] as? String ?? "Processing"
-                print("API: Poll \(attempt): \(status) \(progress)% - \(stage)")
+                os_log("Poll %d: %{public}@ %d%% - %{public}@", log: apiLog, type: .debug, attempt, status, progress, stage)
                 
                 if status == "complete" {
                     if let result = json["result"] as? [String: Any] {
@@ -179,7 +182,7 @@ class APIService {
             } catch {
                 // Network error (timeout, connection refused, etc.)
                 consecutiveNetworkErrors += 1
-                print("API: Poll \(attempt): Network error (\(consecutiveNetworkErrors)/\(maxNetworkRetries)) - \(error.localizedDescription)")
+                os_log("Poll %d: Network error (%d/%d) - %{public}@", log: apiLog, type: .error, attempt, consecutiveNetworkErrors, maxNetworkRetries, error.localizedDescription)
                 
                 if consecutiveNetworkErrors >= maxNetworkRetries {
                     // Too many consecutive network errors - give up
@@ -213,12 +216,12 @@ class APIService {
         }
         
         if httpResponse.statusCode == 401 {
-            print("API: /me returned 401 - token invalid")
+            os_log("/me returned 401 - token invalid", log: apiLog, type: .error)
             throw APIError.unauthorized
         }
         
         if httpResponse.statusCode != 200 {
-            print("API: /me returned \(httpResponse.statusCode)")
+            os_log("/me returned %d", log: apiLog, type: .error, httpResponse.statusCode)
             throw APIError.invalidResponse
         }
         

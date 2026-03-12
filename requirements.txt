@@ -14,3 +14,4 @@ trafilatura>=2.0.0
 PyMuPDF>=1.25.0
 pdfminer.six>=20231228
 tenacity>=8.4.1
+stripe>=7.0.0

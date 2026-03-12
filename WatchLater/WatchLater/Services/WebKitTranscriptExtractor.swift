@@ -1,5 +1,8 @@
 import Foundation
 import WebKit
+import os.log
+
+private let webKitLog = OSLog(subsystem: "com.watchlater.app", category: "WebKitTranscript")
 
 /// WebKit-based transcript extractor that uses WKWebView to run YouTube's JavaScript.
 ///
@@ -27,7 +30,7 @@ class WebKitTranscriptExtractor: NSObject, WKNavigationDelegate {
         self.videoId = videoId
         self.hasFinished = false
         
-        print("📱 WebKit: Starting extraction for \(videoId)")
+        os_log("Starting extraction for %{public}@", log: webKitLog, type: .info, videoId)
         
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
@@ -74,7 +77,7 @@ class WebKitTranscriptExtractor: NSObject, WKNavigationDelegate {
     }
     
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        print("📱 WebKit: Page loaded, waiting for player...")
+        os_log("Page loaded, waiting for player...", log: webKitLog, type: .info)
         
         // Wait for player to initialize, then click CC button
         Task {
@@ -111,10 +114,10 @@ class WebKitTranscriptExtractor: NSObject, WKNavigationDelegate {
         
         webView?.evaluateJavaScript(clickScript) { [weak self] result, error in
             if let result = result as? String {
-                print("📱 WebKit: CC button action: \(result)")
+                os_log("CC button action: %{public}@", log: webKitLog, type: .debug, result)
             }
             if let error = error {
-                print("📱 WebKit: CC click error: \(error.localizedDescription)")
+                os_log("CC click error: %{public}@", log: webKitLog, type: .error, error.localizedDescription)
             }
         }
         
@@ -154,7 +157,7 @@ class WebKitTranscriptExtractor: NSObject, WKNavigationDelegate {
         webView?.evaluateJavaScript(domScript) { [weak self] result, error in
             // DOM extraction is usually not sufficient for full transcript
             // Just finish with nil if we get here
-            print("📱 WebKit: DOM extraction attempted")
+            os_log("DOM extraction attempted", log: webKitLog, type: .debug)
             self?.finishWithResult(nil)
         }
     }
@@ -255,13 +258,13 @@ extension WebKitTranscriptExtractor: WKScriptMessageHandler {
             // Got transcript from intercepted request
             if let transcript = body["transcript"] as? String, !transcript.isEmpty {
                 let source = body["source"] as? String ?? "unknown"
-                print("📱 WebKit: SUCCESS via \(source) - Got \(transcript.count) chars")
+                os_log("SUCCESS via %{public}@ - Got %d chars", log: webKitLog, type: .info, source, transcript.count)
                 finishWithResult(parseTranscript(transcript))
                 return
             }
             
             if let error = body["error"] as? String {
-                print("📱 WebKit: Error - \(error)")
+                os_log("Error - %{public}@", log: webKitLog, type: .error, error)
                 // Don't finish yet - let it try other methods
             }
         }
