@@ -1,12 +1,13 @@
 """
 Knowledge Map API router.
 
-Provides endpoints for building, retrieving, and updating
+Provides endpoints for building, retrieving, sharing, and updating
 a user's cross-video knowledge map.
 """
 
 import logging
-from fastapi import APIRouter, Depends, Request, HTTPException
+import secrets
+from fastapi import APIRouter, Depends, Request, HTTPException, Query
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -147,3 +148,163 @@ async def _build_map_job(job_id: str, user_id: str, user: dict):
             status=JobStatus.FAILED,
             error=f"Failed to build knowledge map: {str(e)}",
         )
+
+
+# ============ Sharing ============
+
+
+@router.post("/knowledge-map/share")
+@limiter.limit("10/hour")
+async def share_map(request: Request, user: dict = Depends(get_current_user)):
+    """Generate a shareable link for the user's knowledge map.
+
+    Creates a unique share_token and returns a public URL.
+    Subsequent calls return the existing token without regenerating.
+    """
+    user_id = user["id"]
+
+    try:
+        # Check if map exists
+        existing = (
+            supabase.table("knowledge_maps")
+            .select("id, share_token, map_json")
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="No knowledge map to share. Build one first.")
+
+        row = existing.data[0]
+
+        # Return existing token if already shared
+        if row.get("share_token"):
+            share_url = f"{_get_web_app_url()}/shared/{row['share_token']}"
+            return {"shareToken": row["share_token"], "shareUrl": share_url}
+
+        # Generate a new share token
+        share_token = secrets.token_urlsafe(16)
+
+        supabase.table("knowledge_maps").update(
+            {"share_token": share_token}
+        ).eq("id", row["id"]).execute()
+
+        share_url = f"{_get_web_app_url()}/shared/{share_token}"
+        logger.info(f"Knowledge map shared for user {user_id}: {share_token[:8]}...")
+
+        return {"shareToken": share_token, "shareUrl": share_url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sharing knowledge map: {e}")
+        raise HTTPException(status_code=500, detail="Failed to share knowledge map")
+
+
+@router.get("/knowledge-map/shared/{share_token}")
+@limiter.limit("60/minute")
+async def get_shared_map(share_token: str, request: Request):
+    """Get a publicly shared knowledge map (no auth required).
+
+    Returns the map data for viewing purposes.
+    """
+    try:
+        result = (
+            supabase.table("knowledge_maps")
+            .select("map_json, updated_at")
+            .eq("share_token", share_token)
+            .execute()
+        )
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Shared map not found or link has expired")
+
+        row = result.data[0]
+        map_json = row.get("map_json", {})
+
+        return {
+            "knowledgeMap": map_json,
+            "updatedAt": row.get("updated_at"),
+            "isShared": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching shared map: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load shared map")
+
+
+# ============ Topic Deep-Dive ============
+
+
+@router.get("/knowledge-map/topic/{topic_name}")
+@limiter.limit("30/minute")
+async def get_topic_summaries(
+    topic_name: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Get all summaries related to a specific topic in the knowledge map.
+
+    Looks up the topic's video_ids in the map, then fetches matching summaries.
+    """
+    user_id = user["id"]
+
+    try:
+        # Get the knowledge map
+        map_result = (
+            supabase.table("knowledge_maps")
+            .select("map_json")
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+        if not map_result.data:
+            raise HTTPException(status_code=404, detail="No knowledge map found")
+
+        map_json = map_result.data[0].get("map_json", {})
+        topics = map_json.get("topics", [])
+
+        # Find the topic
+        matching_topic = None
+        for t in topics:
+            if t.get("name", "").lower() == topic_name.lower():
+                matching_topic = t
+                break
+
+        if not matching_topic:
+            raise HTTPException(status_code=404, detail=f"Topic '{topic_name}' not found")
+
+        video_ids = matching_topic.get("videoIds", [])
+
+        if not video_ids:
+            return {"topic": matching_topic, "summaries": []}
+
+        # Fetch summaries for these video IDs
+        summaries_result = (
+            supabase.table("summaries")
+            .select("id, youtube_url, video_id, title, overview, content_type, created_at")
+            .eq("user_id", user_id)
+            .is_("deleted_at", "null")
+            .in_("video_id", video_ids)
+            .order("created_at", desc=True)
+            .execute()
+        )
+
+        return {
+            "topic": matching_topic,
+            "summaries": summaries_result.data if summaries_result.data else [],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching topic summaries: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load topic summaries")
+
+
+def _get_web_app_url() -> str:
+    """Get the web app URL from config or default."""
+    import os
+    return os.environ.get("WEB_APP_URL", "https://watchlater.app")

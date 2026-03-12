@@ -327,27 +327,27 @@ class APIService {
     
     func buildKnowledgeMap(authToken: String) async throws -> BuildMapResponse {
         let endpoint = URL(string: "\(AppConfig.apiBaseURL)/knowledge-map/build")!
-        
+
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = AppConfig.apiTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        
+
         if httpResponse.statusCode == 401 {
             throw APIError.unauthorized
         }
-        
+
         if httpResponse.statusCode == 429 {
             throw APIError.rateLimited
         }
-        
+
         if httpResponse.statusCode >= 400 {
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let detail = json["detail"] as? String {
@@ -355,8 +355,107 @@ class APIService {
             }
             throw APIError.serverError("Server error (\(httpResponse.statusCode))")
         }
-        
+
         return try JSONDecoder().decode(BuildMapResponse.self, from: data)
+    }
+
+    // MARK: - Share Knowledge Map
+
+    struct ShareMapResponse: Codable {
+        let shareToken: String
+        let shareUrl: String
+    }
+
+    func shareKnowledgeMap(authToken: String) async throws -> ShareMapResponse {
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/knowledge-map/share")!
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+
+        if httpResponse.statusCode == 404 {
+            throw APIError.serverError("No knowledge map found. Build one first.")
+        }
+
+        if httpResponse.statusCode >= 400 {
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("Failed to share knowledge map (\(httpResponse.statusCode))")
+        }
+
+        return try JSONDecoder().decode(ShareMapResponse.self, from: data)
+    }
+
+    // MARK: - Topic Summaries
+
+    struct TopicSummaryData: Codable, Identifiable {
+        var id: String { summaryId }
+        let summaryId: String
+        let title: String
+        let youtubeUrl: String
+        let videoId: String?
+        let createdAt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case summaryId = "summary_id"
+            case title
+            case youtubeUrl = "youtube_url"
+            case videoId = "video_id"
+            case createdAt = "created_at"
+        }
+    }
+
+    struct TopicSummariesResponse: Codable {
+        let topicName: String
+        let summaries: [TopicSummaryData]
+
+        enum CodingKeys: String, CodingKey {
+            case topicName = "topic_name"
+            case summaries
+        }
+    }
+
+    func getTopicSummaries(topicName: String, authToken: String) async throws -> TopicSummariesResponse {
+        let encodedName = topicName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? topicName
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/knowledge-map/topic/\(encodedName)")!
+
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+
+        if httpResponse.statusCode == 404 {
+            throw APIError.serverError("Topic not found in knowledge map.")
+        }
+
+        if httpResponse.statusCode != 200 {
+            throw APIError.serverError("Failed to fetch topic summaries (\(httpResponse.statusCode))")
+        }
+
+        return try JSONDecoder().decode(TopicSummariesResponse.self, from: data)
     }
 }
 

@@ -15,6 +15,8 @@ struct KnowledgeMapView: View {
     @State private var showGraphView = false
     @State private var selectedTopic: APIService.TopicData?
     @State private var searchText = ""
+    @State private var isSharing = false
+    @State private var shareURL: String?
     
     private var allTopics: [APIService.TopicData] {
         mapResponse?.knowledgeMap?.topics ?? []
@@ -113,13 +115,25 @@ struct KnowledgeMapView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 12) {
                         if !topics.isEmpty {
+                            // Share button
+                            Button(action: shareMap) {
+                                if isSharing {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.body)
+                                }
+                            }
+                            .disabled(isSharing || isBuilding)
+
                             // View toggle
                             Button(action: { withAnimation(.spring()) { showGraphView.toggle() } }) {
                                 Image(systemName: showGraphView ? "list.bullet" : "circle.grid.cross")
                                     .font(.body)
                             }
                         }
-                        
+
                         // Build / Rebuild button
                         Button(action: buildMap) {
                             Image(systemName: "arrow.triangle.2.circlepath")
@@ -131,6 +145,7 @@ struct KnowledgeMapView: View {
             }
             .sheet(item: $selectedTopic) { topic in
                 TopicDetailSheet(topic: topic, connections: allConnections)
+                    .environmentObject(authManager)
             }
             .searchable(text: $searchText, prompt: "Search topics or descriptions...")
             .task {
@@ -418,6 +433,38 @@ struct KnowledgeMapView: View {
         }
     }
     
+    private func shareMap() {
+        guard let token = authManager.accessToken else { return }
+        isSharing = true
+
+        Task {
+            do {
+                let response = try await APIService.shared.shareKnowledgeMap(authToken: token)
+                shareURL = response.shareUrl
+
+                // Present share sheet
+                guard let url = URL(string: response.shareUrl) else { return }
+                let activityVC = UIActivityViewController(
+                    activityItems: [url],
+                    applicationActivities: nil
+                )
+
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let rootVC = windowScene.windows.first?.rootViewController {
+                    var topVC = rootVC
+                    while let presented = topVC.presentedViewController {
+                        topVC = presented
+                    }
+                    topVC.present(activityVC, animated: true)
+                }
+            } catch {
+                os_log("Failed to share map: %{public}@", log: knowledgeMapLog, type: .error, "\(error)")
+                errorMessage = error.localizedDescription
+            }
+            isSharing = false
+        }
+    }
+
     private func pollBuild(jobId: String, authToken: String) async throws -> [String: Any] {
         let statusURL = URL(string: "\(AppConfig.apiBaseURL)/status/\(jobId)")!
         
@@ -546,12 +593,16 @@ struct TopicCard: View {
 struct TopicDetailSheet: View {
     let topic: APIService.TopicData
     let connections: [APIService.TopicConnectionData]
+    @EnvironmentObject var authManager: AuthManager
     @Environment(\.dismiss) var dismiss
-    
+    @State private var relatedSummaries: [APIService.TopicSummaryData] = []
+    @State private var isLoadingSummaries = false
+    @State private var showRelatedSummaries = false
+
     private var relevantConnections: [APIService.TopicConnectionData] {
         connections.filter { $0.from == topic.name || $0.to == topic.name }
     }
-    
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -560,7 +611,97 @@ struct TopicDetailSheet: View {
                     Text(topic.description)
                         .font(.body)
                         .foregroundStyle(.secondary)
-                    
+
+                    // View Related Summaries button
+                    Button(action: loadRelatedSummaries) {
+                        HStack {
+                            if isLoadingSummaries {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "play.rectangle.on.rectangle.fill")
+                            }
+                            Text("View Related Summaries")
+                            Spacer()
+                            if let count = topic.videoIds?.count, count > 0 {
+                                Text("\(count)")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(Color.purple)
+                                    .clipShape(Capsule())
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.purple)
+                        .padding()
+                        .background(Color.purple.opacity(0.08))
+                        .cornerRadius(12)
+                    }
+                    .disabled(isLoadingSummaries)
+
+                    // Related summaries list (expandable)
+                    if showRelatedSummaries && !relatedSummaries.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Related Videos")
+                                .font(.headline)
+
+                            ForEach(relatedSummaries) { summary in
+                                Button {
+                                    if let url = URL(string: summary.youtubeUrl) {
+                                        UIApplication.shared.open(url)
+                                    }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        // Thumbnail
+                                        if let videoId = summary.videoId {
+                                            AsyncImage(url: URL(string: "https://img.youtube.com/vi/\(videoId)/default.jpg")) { phase in
+                                                switch phase {
+                                                case .success(let image):
+                                                    image
+                                                        .resizable()
+                                                        .aspectRatio(16/9, contentMode: .fill)
+                                                        .frame(width: 64, height: 36)
+                                                        .cornerRadius(6)
+                                                default:
+                                                    RoundedRectangle(cornerRadius: 6)
+                                                        .fill(Color(.systemGray5))
+                                                        .frame(width: 64, height: 36)
+                                                        .overlay(
+                                                            Image(systemName: "play.fill")
+                                                                .font(.caption)
+                                                                .foregroundStyle(.secondary)
+                                                        )
+                                                }
+                                            }
+                                        }
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(summary.title)
+                                                .font(.subheadline)
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(2)
+                                                .multilineTextAlignment(.leading)
+                                        }
+
+                                        Spacer()
+
+                                        Image(systemName: "arrow.up.right")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(10)
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(10)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
                     // Importance
                     HStack {
                         Text("Importance")
@@ -577,18 +718,18 @@ struct TopicDetailSheet: View {
                     .padding()
                     .background(Color(.systemGray6))
                     .cornerRadius(12)
-                    
+
                     // Key Facts
                     if let facts = topic.facts, !facts.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Key Facts")
                                 .font(.headline)
-                            
+
                             ForEach(facts) { fact in
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("• \(fact.fact)")
                                         .font(.subheadline)
-                                    
+
                                     if let source = fact.sourceTitle, !source.isEmpty {
                                         Button {
                                             if let videoId = fact.sourceVideoId, !videoId.isEmpty,
@@ -611,20 +752,20 @@ struct TopicDetailSheet: View {
                             }
                         }
                     }
-                    
+
                     // Connections
                     if !relevantConnections.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Connections")
                                 .font(.headline)
-                            
+
                             ForEach(relevantConnections) { conn in
                                 HStack(spacing: 8) {
                                     let isFrom = conn.from == topic.name
                                     Text(isFrom ? conn.to : conn.from)
                                         .font(.subheadline.bold())
                                         .foregroundStyle(.purple)
-                                    
+
                                     Text("— \(conn.relationship)")
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
@@ -632,13 +773,13 @@ struct TopicDetailSheet: View {
                             }
                         }
                     }
-                    
+
                     // Related Topics
                     if let related = topic.relatedTopics, !related.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Related Topics")
                                 .font(.headline)
-                            
+
                             FlowLayout(spacing: 8) {
                                 ForEach(related, id: \.self) { name in
                                     Text(name)
@@ -662,6 +803,31 @@ struct TopicDetailSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+
+    private func loadRelatedSummaries() {
+        guard let token = authManager.accessToken else { return }
+
+        if showRelatedSummaries {
+            // Toggle off if already showing
+            withAnimation { showRelatedSummaries = false }
+            return
+        }
+
+        isLoadingSummaries = true
+        Task {
+            do {
+                let response = try await APIService.shared.getTopicSummaries(
+                    topicName: topic.name,
+                    authToken: token
+                )
+                relatedSummaries = response.summaries
+                withAnimation { showRelatedSummaries = true }
+            } catch {
+                os_log("Failed to load topic summaries: %{public}@", log: knowledgeMapLog, type: .error, "\(error)")
+            }
+            isLoadingSummaries = false
         }
     }
 }
