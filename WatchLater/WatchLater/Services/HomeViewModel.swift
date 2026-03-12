@@ -15,10 +15,16 @@ class HomeViewModel: ObservableObject {
     @Published var isSuccess = false
     @Published var summariesRemaining: Int?
     @Published var quotaExceeded = false  // Triggers paywall
-    
+
     // Progress tracking
     @Published var currentStage: SummarizationStage = .fetchingTranscript
     @Published var stageProgress: Double = 0.0  // 0.0 - 1.0 within current stage
+
+    // Batch progress tracking
+    @Published var isBatchMode = false
+    @Published var batchTotal: Int = 0
+    @Published var batchCompleted: Int = 0
+    @Published var batchFailed: Int = 0
     
     private let api = APIService.shared
     private var progressTimer: Timer?
@@ -135,6 +141,83 @@ class HomeViewModel: ObservableObject {
         return nil
     }
     
+    // MARK: - Batch Summarize (Playlist)
+
+    /// Check if a URL is a playlist URL
+    static func isPlaylistURL(_ url: String) -> Bool {
+        return url.contains("list=") && (url.contains("youtube.com") || url.contains("youtu.be"))
+    }
+
+    /// Batch summarize a playlist (Pro-only)
+    func batchSummarize(playlistUrl: String, token: String, summaryFormat: String = "detailed", language: String = "en") async {
+        isProcessing = true
+        isBatchMode = true
+        statusMessage = nil
+        isSuccess = false
+        batchTotal = 0
+        batchCompleted = 0
+        batchFailed = 0
+
+        do {
+            os_log("Starting batch summarization for playlist...", log: homeLog, type: .info)
+
+            // Step 1: Create batch job
+            let batchResponse = try await api.batchSummarize(
+                playlistUrl: playlistUrl,
+                authToken: token,
+                summaryFormat: summaryFormat,
+                language: language
+            )
+
+            batchTotal = batchResponse.total
+            statusMessage = "Processing \(batchResponse.total) videos..."
+            os_log("Batch created: %{public}@ (%d videos)", log: homeLog, type: .info, "\(batchResponse.batchId.prefix(8))", batchResponse.total)
+
+            // Step 2: Poll for completion
+            let maxPolls = 300  // Up to ~15 minutes (3s intervals)
+            for _ in 1...maxPolls {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+
+                let status = try await api.pollBatchStatus(batchId: batchResponse.batchId, authToken: token)
+
+                batchCompleted = status.completed
+                batchFailed = status.failed
+                statusMessage = status.stage ?? "Processing \(status.completed)/\(status.total) videos"
+
+                if status.status == "complete" {
+                    let succeeded = status.completed
+                    let failedCount = status.failed
+
+                    if failedCount == 0 {
+                        statusMessage = "✅ All \(succeeded) videos summarized!"
+                        isSuccess = true
+                    } else if succeeded > 0 {
+                        statusMessage = "✅ \(succeeded) saved, \(failedCount) failed"
+                        isSuccess = true
+                    } else {
+                        statusMessage = "All \(failedCount) videos failed"
+                        isSuccess = false
+                    }
+
+                    os_log("Batch complete: %d succeeded, %d failed", log: homeLog, type: .info, succeeded, failedCount)
+                    break
+                }
+            }
+
+        } catch {
+            statusMessage = error.localizedDescription
+            isSuccess = false
+            os_log("Batch error: %{public}@", log: homeLog, type: .error, "\(error)")
+
+            if let apiError = error as? APIError, case .rateLimited = apiError {
+                quotaExceeded = true
+            }
+        }
+
+        isProcessing = false
+        isBatchMode = false
+    }
+
     // MARK: - Progress Simulation
 
     

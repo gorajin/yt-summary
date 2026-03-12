@@ -110,6 +110,54 @@ def extract_video_id(url: str) -> Optional[str]:
     return None
 
 
+def extract_playlist_id(url: str) -> Optional[str]:
+    """Extract playlist ID from YouTube playlist URLs.
+
+    Supports:
+    - https://www.youtube.com/playlist?list=PLxxx
+    - https://www.youtube.com/watch?v=xxx&list=PLxxx
+    """
+    if not url:
+        return None
+    match = re.search(r'[?&]list=([a-zA-Z0-9_-]+)', url)
+    return match.group(1) if match else None
+
+
+def get_playlist_video_ids(playlist_url: str, max_videos: int = 50) -> List[str]:
+    """Extract video IDs from a YouTube playlist using yt-dlp.
+
+    Uses flat extraction (metadata only, no downloads) for speed.
+    Returns up to max_videos video IDs.
+
+    Raises ValueError if the playlist cannot be parsed.
+    """
+    ydl_opts = {
+        'extract_flat': True,
+        'quiet': True,
+        'no_warnings': True,
+        'playlistend': max_videos,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(playlist_url, download=False)
+            if not info or 'entries' not in info:
+                raise ValueError("Could not parse playlist. Please check the URL.")
+
+            video_ids = []
+            for entry in info['entries']:
+                if entry and entry.get('id'):
+                    video_ids.append(entry['id'])
+
+            if not video_ids:
+                raise ValueError("Playlist appears to be empty.")
+
+            logger.info(f"Extracted {len(video_ids)} videos from playlist")
+            return video_ids
+    except yt_dlp.utils.DownloadError as e:
+        raise ValueError(f"Could not access playlist: {str(e)[:100]}")
+
+
 def get_video_title(video_id: str) -> str:
     """Get video title using oembed API (no auth required)."""
     try:

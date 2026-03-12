@@ -11,11 +11,16 @@ struct HomeView: View {
     @AppStorage("summaryFormat") private var summaryFormat: String = "detailed"
     @AppStorage("summaryLanguage") private var summaryLanguage: String = "en"
     
+    /// Check if the current input is a playlist URL
+    private var isPlaylistURL: Bool {
+        HomeViewModel.isPlaylistURL(urlInput)
+    }
+
     /// Extract video ID using shared logic (no more duplication)
     private var videoId: String? {
         TranscriptExtractor.extractVideoId(from: urlInput)
     }
-    
+
     /// YouTube thumbnail URL
     private var thumbnailURL: URL? {
         guard let videoId = videoId else { return nil }
@@ -86,8 +91,38 @@ struct HomeView: View {
                         .background(.white)
                         .cornerRadius(12)
                         
-                        // Video Preview with Thumbnail (when URL is valid)
-                        if let thumbnailURL = thumbnailURL {
+                        // Video/Playlist Preview (when URL is valid)
+                        if isPlaylistURL {
+                            HStack(spacing: 12) {
+                                Rectangle()
+                                    .fill(Color(.systemGray5))
+                                    .frame(width: 100, height: 56)
+                                    .cornerRadius(8)
+                                    .overlay(
+                                        Image(systemName: "list.bullet.rectangle.fill")
+                                            .font(.title2)
+                                            .foregroundStyle(.orange)
+                                    )
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("YouTube Playlist")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+
+                                    if storeManager.isPro {
+                                        Text("All videos will be summarized")
+                                            .font(.caption)
+                                            .foregroundStyle(.green)
+                                    } else {
+                                        Text("Pro required for playlists")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
+
+                                Spacer()
+                            }
+                        } else if let thumbnailURL = thumbnailURL {
                             HStack(spacing: 12) {
                                 AsyncImage(url: thumbnailURL) { phase in
                                     switch phase {
@@ -106,21 +141,21 @@ struct HomeView: View {
                                         thumbnailPlaceholder
                                     }
                                 }
-                                
+
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("YouTube Video")
                                         .font(.subheadline)
                                         .fontWeight(.medium)
-                                    
+
                                     Text(urlInput)
                                         .lineLimit(1)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
-                                
+
                                 Spacer()
                             }
-                            }
+                        }
                             .padding(.horizontal, 4)
                             
                             // Configuration Options
@@ -176,40 +211,70 @@ struct HomeView: View {
                         // Summarize Button with Progress UI
                         Button(action: summarize) {
                             if viewModel.isProcessing {
-                                // Enhanced progress UI with stages
-                                VStack(spacing: 10) {
-                                    // Stage indicator with icon
-                                    HStack(spacing: 8) {
-                                        Image(systemName: viewModel.currentStage.icon)
-                                            .font(.subheadline)
-                                        Text(viewModel.currentStage.displayText)
-                                            .font(.subheadline)
-                                    }
-                                    .foregroundStyle(.white)
-                                    
-                                    // Progress bar
-                                    GeometryReader { geometry in
-                                        ZStack(alignment: .leading) {
-                                            // Background track
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .fill(Color.white.opacity(0.3))
-                                                .frame(height: 6)
-                                            
-                                            // Progress fill
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .fill(Color.white)
-                                                .frame(width: geometry.size.width * viewModel.overallProgress, height: 6)
-                                                .animation(.linear(duration: 0.1), value: viewModel.overallProgress)
+                                if viewModel.isBatchMode {
+                                    // Batch progress UI
+                                    VStack(spacing: 10) {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "square.stack.fill")
+                                                .font(.subheadline)
+                                            Text("\(viewModel.batchCompleted)/\(viewModel.batchTotal) videos")
+                                                .font(.subheadline)
                                         }
+                                        .foregroundStyle(.white)
+
+                                        GeometryReader { geometry in
+                                            ZStack(alignment: .leading) {
+                                                RoundedRectangle(cornerRadius: 4)
+                                                    .fill(Color.white.opacity(0.3))
+                                                    .frame(height: 6)
+
+                                                RoundedRectangle(cornerRadius: 4)
+                                                    .fill(Color.white)
+                                                    .frame(
+                                                        width: geometry.size.width * (viewModel.batchTotal > 0
+                                                            ? Double(viewModel.batchCompleted + viewModel.batchFailed) / Double(viewModel.batchTotal)
+                                                            : 0),
+                                                        height: 6
+                                                    )
+                                                    .animation(.linear(duration: 0.3), value: viewModel.batchCompleted)
+                                            }
+                                        }
+                                        .frame(height: 6)
                                     }
-                                    .frame(height: 6)
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                } else {
+                                    // Single video progress UI with stages
+                                    VStack(spacing: 10) {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: viewModel.currentStage.icon)
+                                                .font(.subheadline)
+                                            Text(viewModel.currentStage.displayText)
+                                                .font(.subheadline)
+                                        }
+                                        .foregroundStyle(.white)
+
+                                        GeometryReader { geometry in
+                                            ZStack(alignment: .leading) {
+                                                RoundedRectangle(cornerRadius: 4)
+                                                    .fill(Color.white.opacity(0.3))
+                                                    .frame(height: 6)
+
+                                                RoundedRectangle(cornerRadius: 4)
+                                                    .fill(Color.white)
+                                                    .frame(width: geometry.size.width * viewModel.overallProgress, height: 6)
+                                                    .animation(.linear(duration: 0.1), value: viewModel.overallProgress)
+                                            }
+                                        }
+                                        .frame(height: 6)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding()
                             } else {
                                 HStack {
-                                    Image(systemName: "sparkles")
-                                    Text("Summarize & Save")
+                                    Image(systemName: isPlaylistURL ? "list.bullet.rectangle" : "sparkles")
+                                    Text(isPlaylistURL ? "Summarize Playlist" : "Summarize & Save")
                                 }
                                 .frame(maxWidth: .infinity)
                                 .padding()
@@ -359,9 +424,29 @@ struct HomeView: View {
         // Haptic feedback
         let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
         impactFeedback.impactOccurred()
-        
+
         Task {
-            await viewModel.summarize(url: urlInput, token: authManager.accessToken ?? "", summaryFormat: summaryFormat, language: summaryLanguage)
+            if isPlaylistURL {
+                // Playlist → batch summarize (Pro-only)
+                if !storeManager.isPro {
+                    showingPaywall = true
+                    return
+                }
+                await viewModel.batchSummarize(
+                    playlistUrl: urlInput,
+                    token: authManager.accessToken ?? "",
+                    summaryFormat: summaryFormat,
+                    language: summaryLanguage
+                )
+            } else {
+                // Single video
+                await viewModel.summarize(
+                    url: urlInput,
+                    token: authManager.accessToken ?? "",
+                    summaryFormat: summaryFormat,
+                    language: summaryLanguage
+                )
+            }
             if viewModel.isSuccess {
                 urlInput = ""
             }

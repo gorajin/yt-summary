@@ -55,6 +55,14 @@ class IngestRequest(BaseModel):
     language: Optional[str] = "en"
 
 
+class BatchSummarizeRequest(BaseModel):
+    """Request to summarize multiple videos or an entire playlist (Pro-only)."""
+    urls: Optional[List[str]] = None       # Individual video URLs
+    playlist_url: Optional[str] = None     # YouTube playlist URL (resolved server-side)
+    summary_format: Optional[SummaryFormat] = SummaryFormat.DETAILED
+    language: Optional[str] = "en"
+
+
 class SummarizeResponse(BaseModel):
     success: bool
     title: Optional[str] = None

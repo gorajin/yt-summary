@@ -252,6 +252,148 @@ class APIService {
         return url
     }
     
+    // MARK: - Batch Summarize (Pro-only)
+
+    struct BatchJob: Codable {
+        let jobId: String
+        let url: String
+
+        enum CodingKeys: String, CodingKey {
+            case jobId = "job_id"
+            case url
+        }
+    }
+
+    struct BatchResponse: Codable {
+        let batchId: String
+        let total: Int
+        let jobs: [BatchJob]
+        let message: String?
+
+        enum CodingKeys: String, CodingKey {
+            case batchId = "batch_id"
+            case total
+            case jobs
+            case message
+        }
+    }
+
+    struct BatchJobStatus: Codable {
+        let jobId: String
+        let url: String
+        let status: String
+        let progress: Int?
+        let title: String?
+        let error: String?
+
+        enum CodingKeys: String, CodingKey {
+            case jobId = "job_id"
+            case url
+            case status
+            case progress
+            case title
+            case error
+        }
+    }
+
+    struct BatchStatusResponse: Codable {
+        let batchId: String
+        let status: String
+        let progress: Int
+        let total: Int
+        let completed: Int
+        let failed: Int
+        let stage: String?
+        let jobs: [BatchJobStatus]
+
+        enum CodingKeys: String, CodingKey {
+            case batchId = "batch_id"
+            case status
+            case progress
+            case total
+            case completed
+            case failed
+            case stage
+            case jobs
+        }
+    }
+
+    /// Initiate a batch summarization job for a playlist or multiple URLs
+    func batchSummarize(playlistUrl: String? = nil, urls: [String]? = nil, authToken: String, summaryFormat: String = "detailed", language: String = "en") async throws -> BatchResponse {
+        let endpoint = URL(string: "\(AppConfig.apiBaseURL)/batch-summarize")!
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = AppConfig.apiTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+
+        var bodyDict: [String: Any] = [
+            "summary_format": summaryFormat,
+            "language": language,
+        ]
+        if let playlistUrl = playlistUrl {
+            bodyDict["playlist_url"] = playlistUrl
+        }
+        if let urls = urls {
+            bodyDict["urls"] = urls
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: bodyDict)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+
+        if httpResponse.statusCode == 403 {
+            throw APIError.serverError("Batch summarization requires a Pro subscription.")
+        }
+
+        if httpResponse.statusCode == 429 {
+            throw APIError.rateLimited
+        }
+
+        if httpResponse.statusCode >= 400 {
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = json["detail"] as? String {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("Server error (\(httpResponse.statusCode))")
+        }
+
+        return try JSONDecoder().decode(BatchResponse.self, from: data)
+    }
+
+    /// Poll batch status until all jobs complete or fail
+    func pollBatchStatus(batchId: String, authToken: String) async throws -> BatchStatusResponse {
+        let statusURL = URL(string: "\(AppConfig.apiBaseURL)/batch-status/\(batchId)")!
+
+        var request = URLRequest(url: statusURL)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        if httpResponse.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+
+        if httpResponse.statusCode != 200 {
+            throw APIError.serverError("Failed to get batch status (\(httpResponse.statusCode))")
+        }
+
+        return try JSONDecoder().decode(BatchStatusResponse.self, from: data)
+    }
+
     // MARK: - Knowledge Map
     
     struct KnowledgeMapResponse: Codable {
